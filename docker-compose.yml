@@ -1,8 +1,6 @@
-version: "3.8"
-
 services:
   # ---------------------------------------------------------------
-  # Open WebUI (your existing setup — included here for one-command launch)
+  # Open WebUI
   # ---------------------------------------------------------------
   open-webui:
     image: ghcr.io/open-webui/open-webui:main
@@ -16,7 +14,7 @@ services:
     restart: always
 
   # ---------------------------------------------------------------
-  # HypeBot — streetwear deals scraper + AI analyzer
+  # HypeBot — optimized for 24/7
   # ---------------------------------------------------------------
   hypebot:
     build: .
@@ -30,6 +28,15 @@ services:
     depends_on:
       - open-webui
     restart: always
+    stop_grace_period: 10s
+    mem_limit: 256m
+    memswap_limit: 512m
+    cpus: 0.5
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
 
 volumes:
   open-webui:

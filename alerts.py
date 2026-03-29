@@ -1,5 +1,5 @@
 """
-Alert module — sends deal notifications via Discord webhook, email, or console log.
+Alert module — sends deal notifications via Telegram, Discord webhook, email, or console.
 """
 
 import json
@@ -19,6 +19,9 @@ def send_alert(deal: dict, analysis: dict | None = None):
     """Dispatch a deal alert to all configured channels."""
     msg = _format_message(deal, analysis)
     log.info("ALERT: %s", msg["title"])
+
+    if config.TELEGRAM_BOT_TOKEN and config.TELEGRAM_CHAT_ID:
+        _send_telegram(msg)
 
     if config.DISCORD_WEBHOOK_URL:
         _send_discord(msg)
@@ -42,8 +45,81 @@ def _format_message(deal: dict, analysis: dict | None) -> dict:
         "url": deal.get("url", ""),
         "price": deal.get("price", "N/A"),
         "source": deal.get("source", ""),
+        "image": deal.get("image", ""),
+        "upvotes": deal.get("upvotes", 0),
+        "comments": deal.get("comments", 0),
+        "flair": deal.get("flair", ""),
         "verdict": verdict,
     }
+
+
+# ---------------------------------------------------------------------------
+# Telegram
+# ---------------------------------------------------------------------------
+
+def _send_telegram(msg: dict):
+    verdict_plain = msg["verdict"].replace("**", "") if msg["verdict"] else ""
+    text_parts = [
+        f"🔥 *{_tg_escape(msg['title'])}*",
+    ]
+    if msg.get("flair"):
+        text_parts.append(f"🏷 {_tg_escape(msg['flair'])}")
+    text_parts.append(f"💰 Price: {_tg_escape(msg['price'])}")
+    text_parts.append(f"📡 Source: {_tg_escape(msg['source'])}")
+    if msg.get("upvotes") or msg.get("comments"):
+        text_parts.append(f"⬆️ {msg['upvotes']} upvotes  💬 {msg['comments']} comments")
+    if msg["url"]:
+        text_parts.append(f"🔗 [View Deal]({msg['url']})")
+    if verdict_plain:
+        text_parts.append(f"🤖 {_tg_escape(verdict_plain)}")
+
+    text = "\n".join(text_parts)
+    base = f"https://api.telegram.org/bot{config.TELEGRAM_BOT_TOKEN}"
+
+    try:
+        if msg.get("image"):
+            resp = requests.post(
+                f"{base}/sendPhoto",
+                json={
+                    "chat_id": config.TELEGRAM_CHAT_ID,
+                    "photo": msg["image"],
+                    "caption": text,
+                    "parse_mode": "Markdown",
+                },
+                timeout=15,
+            )
+            if not resp.ok:
+                log.warning("sendPhoto failed, falling back to sendMessage: %s", resp.text)
+                resp = _tg_send_text(base, text)
+        else:
+            resp = _tg_send_text(base, text)
+
+        if resp.ok:
+            log.info("Telegram alert sent: %s", msg["title"])
+        else:
+            log.error("Telegram API error: %s", resp.text)
+    except Exception:
+        log.exception("Telegram alert failed")
+
+
+def _tg_send_text(base: str, text: str):
+    return requests.post(
+        f"{base}/sendMessage",
+        json={
+            "chat_id": config.TELEGRAM_CHAT_ID,
+            "text": text,
+            "parse_mode": "Markdown",
+            "disable_web_page_preview": False,
+        },
+        timeout=10,
+    )
+
+
+def _tg_escape(text: str) -> str:
+    """Escape special Markdown characters for Telegram."""
+    for ch in ("_", "*", "[", "]", "(", ")", "~", "`", ">", "#", "+", "-", "=", "|", "{", "}", ".", "!"):
+        text = text.replace(ch, f"\\{ch}")
+    return text
 
 
 # ---------------------------------------------------------------------------
@@ -60,6 +136,8 @@ def _send_discord(msg: dict):
             {"name": "Price", "value": msg["price"], "inline": True},
         ],
     }
+    if msg.get("image"):
+        embed["image"] = {"url": msg["image"]}
     if msg["verdict"]:
         embed["fields"].append({"name": "AI Verdict", "value": msg["verdict"]})
 

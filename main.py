@@ -1,10 +1,14 @@
 #!/usr/bin/env python3
 """
 HypeBot — 24/7 streetwear deals monitor.
-Scrapes RSS feeds and web pages, analyzes deals with Ollama, and sends alerts.
+Optimized for long-running operation: graceful shutdown, log rotation,
+batch dedup, auto-pruning, and exponential backoff on errors.
 """
 
+import gc
 import logging
+import logging.handlers
+import signal
 import sys
 import time
 
@@ -14,36 +18,66 @@ import scraper
 import analyzer
 import alerts
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-    handlers=[
-        logging.StreamHandler(sys.stdout),
-        logging.FileHandler("hypebot.log", encoding="utf-8"),
-    ],
+_shutdown = False
+
+
+def _handle_signal(signum, frame):
+    global _shutdown
+    _shutdown = True
+
+
+signal.signal(signal.SIGTERM, _handle_signal)
+signal.signal(signal.SIGINT, _handle_signal)
+
+log_formatter = logging.Formatter(
+    "%(asctime)s [%(levelname)s] %(name)s: %(message)s"
 )
+console = logging.StreamHandler(sys.stdout)
+console.setFormatter(log_formatter)
+
+file_handler = logging.handlers.RotatingFileHandler(
+    "hypebot.log", maxBytes=5 * 1024 * 1024, backupCount=3, encoding="utf-8"
+)
+file_handler.setFormatter(log_formatter)
+
+logging.basicConfig(level=logging.INFO, handlers=[console, file_handler])
 log = logging.getLogger("hypebot")
 
 
 def run_cycle():
-    """Single scrape → analyze → alert cycle."""
-    log.info("Starting scan cycle...")
+    t0 = time.monotonic()
+    log.info("Scan cycle starting...")
+
+    known_ids = database.load_known_ids()
+    log.info("Loaded %d known deal IDs into memory", len(known_ids))
+
     raw_deals = scraper.fetch_all_deals()
+
+    ollama_ok = analyzer.health_check()
+    if not ollama_ok:
+        log.warning("Ollama unreachable — skipping AI analysis this cycle")
+
     new_count = 0
+    alert_count = 0
 
     for deal in raw_deals:
-        deal_id = database.deal_hash(deal["source"], deal["title"], deal["url"])
+        if _shutdown:
+            break
 
-        if database.deal_exists(deal_id):
+        deal_id = database.deal_hash(deal["source"], deal["title"], deal["url"])
+        if deal_id in known_ids:
             continue
 
-        # AI analysis (skip if Ollama is unreachable)
         ai_result = None
-        if analyzer.health_check():
+        if ollama_ok:
             ai_result = analyzer.analyze_deal(
                 title=deal["title"],
                 summary=deal.get("summary", ""),
                 price=deal.get("price", ""),
+                upvotes=deal.get("upvotes", 0),
+                comments=deal.get("comments", 0),
+                source=deal.get("source", ""),
+                flair=deal.get("flair", ""),
             )
 
         database.save_deal(
@@ -54,7 +88,12 @@ def run_cycle():
             price=deal.get("price", ""),
             summary=deal.get("summary", ""),
             ai_analysis=str(ai_result) if ai_result else "",
+            upvotes=deal.get("upvotes", 0),
+            comments=deal.get("comments", 0),
+            flair=deal.get("flair", ""),
+            image=deal.get("image", ""),
         )
+        known_ids.add(deal_id)
 
         should_alert = True
         if ai_result and ai_result.get("verdict") == "pass":
@@ -65,41 +104,65 @@ def run_cycle():
         if should_alert:
             alerts.send_alert(deal, ai_result)
             database.mark_alerted(deal_id)
+            alert_count += 1
 
         new_count += 1
 
-    log.info("Cycle complete — %d new deals processed.", new_count)
+    elapsed = time.monotonic() - t0
+    log.info(
+        "Cycle done in %.1fs — %d new, %d alerted, %d total in DB",
+        elapsed, new_count, alert_count, len(known_ids),
+    )
     return new_count
 
 
 def main():
     log.info("=" * 60)
-    log.info("  HypeBot starting up")
-    log.info("  Ollama:  %s  |  Model: %s", config.OLLAMA_HOST, config.MODEL)
-    log.info("  Interval: %ds", config.SCRAPE_INTERVAL)
+    log.info("  HypeBot v2 — optimized for 24/7")
+    log.info("  Ollama:   %s  |  Model: %s", config.OLLAMA_HOST, config.MODEL)
+    log.info("  Interval: %ds  |  Sources: %d RSS, %d web, %d Reddit",
+             config.SCRAPE_INTERVAL,
+             len(config.RSS_FEEDS),
+             len(config.SCRAPE_TARGETS),
+             len(config.REDDIT_SUBREDDITS))
     log.info("=" * 60)
 
     database.init_db()
 
-    if not analyzer.health_check():
-        log.warning(
-            "Ollama not reachable at %s — bot will run without AI analysis. "
-            "Make sure Ollama is running and the model '%s' is pulled.",
-            config.OLLAMA_HOST,
-            config.MODEL,
-        )
+    consecutive_errors = 0
+    cycle_count = 0
 
-    while True:
+    while not _shutdown:
         try:
             run_cycle()
-        except KeyboardInterrupt:
-            log.info("Shutting down...")
-            break
+            consecutive_errors = 0
+            cycle_count += 1
+
+            if cycle_count % 96 == 0:  # ~every 24h at 15min intervals
+                pruned = database.prune_old_deals(days=30)
+                if pruned:
+                    log.info("Pruned %d old deals from DB", pruned)
+                gc.collect()
+
         except Exception:
-            log.exception("Cycle error — will retry next interval")
+            consecutive_errors += 1
+            backoff = min(60 * consecutive_errors, 600)
+            log.exception(
+                "Cycle error #%d — backing off %ds", consecutive_errors, backoff
+            )
+            time.sleep(backoff)
+            continue
+
+        if _shutdown:
+            break
 
         log.info("Sleeping %ds until next cycle...", config.SCRAPE_INTERVAL)
-        time.sleep(config.SCRAPE_INTERVAL)
+        for _ in range(config.SCRAPE_INTERVAL):
+            if _shutdown:
+                break
+            time.sleep(1)
+
+    log.info("HypeBot shut down gracefully.")
 
 
 if __name__ == "__main__":

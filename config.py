@@ -33,7 +33,28 @@ DEAL_KEYWORDS = [
     "sale", "drop", "restock", "% off", "discount",
     "clearance", "release", "launch", "limited", "exclusive",
     "markdown", "deal", "price cut", "new arrival",
+    "w2c", "find", "haul", "qc", "in hand", "review",
+    "steal", "grail", "heat", "fire", "sleeper",
 ]
+
+# ---------------------------------------------------------------------------
+# Reddit
+# ---------------------------------------------------------------------------
+REDDIT_SUBREDDITS = {
+    # Fashion reps & finds
+    "fashionreps":        {"sort": "hot", "limit": 30, "min_upvotes": 20},
+    "repbudgetsneakers":  {"sort": "hot", "limit": 25, "min_upvotes": 15},
+    "qualityreps":        {"sort": "hot", "limit": 20, "min_upvotes": 10},
+    # Legit streetwear & sneakers
+    "streetwear":         {"sort": "hot", "limit": 25, "min_upvotes": 50},
+    "sneakers":           {"sort": "hot", "limit": 25, "min_upvotes": 50},
+    "supremeclothing":    {"sort": "hot", "limit": 20, "min_upvotes": 15},
+    "palaceclothing":     {"sort": "hot", "limit": 20, "min_upvotes": 10},
+    # Deals
+    "frugalmalefashion":  {"sort": "hot", "limit": 25, "min_upvotes": 30},
+    "sneakerdeals":       {"sort": "hot", "limit": 25, "min_upvotes": 10},
+}
+REDDIT_MIN_UPVOTES_DEFAULT = 10
 
 # ---------------------------------------------------------------------------
 # RSS feeds
@@ -69,6 +90,8 @@ SCRAPE_TARGETS = [
 # ---------------------------------------------------------------------------
 # Alerts
 # ---------------------------------------------------------------------------
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
+TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
 DISCORD_WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK_URL", "")
 ALERT_EMAIL_TO = os.getenv("ALERT_EMAIL_TO", "")
 ALERT_EMAIL_FROM = os.getenv("ALERT_EMAIL_FROM", "")
