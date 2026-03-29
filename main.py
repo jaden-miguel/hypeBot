@@ -17,6 +17,7 @@ import database
 import scraper
 import analyzer
 import alerts
+import drops as drop_scraper
 
 _shutdown = False
 
@@ -42,6 +43,31 @@ file_handler.setFormatter(log_formatter)
 
 logging.basicConfig(level=logging.INFO, handlers=[console, file_handler])
 log = logging.getLogger("hypebot")
+
+
+def run_drop_check():
+    """Scrape upcoming drops and fire time-based alerts."""
+    t0 = time.monotonic()
+    raw_drops = drop_scraper.fetch_upcoming_drops()
+
+    added = 0
+    for drop in raw_drops:
+        if database.save_drop(drop):
+            added += 1
+
+    # Fire alerts for drops hitting their notification tier
+    pending = database.get_drops_needing_notification()
+    for drop in pending:
+        if _shutdown:
+            break
+        tier = drop.pop("_notify_tier")
+        alerts.send_drop_alert(drop, tier)
+        database.mark_drop_notified(drop["id"], tier)
+
+    log.info(
+        "Drop check done in %.1fs — %d new drops tracked, %d alerts fired",
+        time.monotonic() - t0, added, len(pending),
+    )
 
 
 def run_cycle():
@@ -134,14 +160,16 @@ def main():
 
     while not _shutdown:
         try:
+            run_drop_check()
             run_cycle()
             consecutive_errors = 0
             cycle_count += 1
 
-            if cycle_count % 96 == 0:  # ~every 24h at 15min intervals
-                pruned = database.prune_old_deals(days=30)
-                if pruned:
-                    log.info("Pruned %d old deals from DB", pruned)
+            if cycle_count % 8 == 0:  # ~every 24h at 3h intervals
+                pruned_deals = database.prune_old_deals(days=30)
+                pruned_drops = database.prune_old_drops(days=7)
+                if pruned_deals or pruned_drops:
+                    log.info("Pruned %d old deals, %d old drops", pruned_deals, pruned_drops)
                 gc.collect()
 
         except Exception:

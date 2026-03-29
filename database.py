@@ -57,6 +57,28 @@ def init_db():
             except sqlite3.OperationalError:
                 pass
 
+        # ── Drops table ──────────────────────────────────────────
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS drops (
+                id              TEXT PRIMARY KEY,
+                title           TEXT NOT NULL,
+                brand           TEXT DEFAULT '',
+                release_dt      TEXT NOT NULL,
+                release_label   TEXT DEFAULT '',
+                price           TEXT DEFAULT '',
+                url             TEXT DEFAULT '',
+                image           TEXT DEFAULT '',
+                source          TEXT DEFAULT '',
+                notified_7day   INTEGER DEFAULT 0,
+                notified_1day   INTEGER DEFAULT 0,
+                notified_today  INTEGER DEFAULT 0,
+                created_at      TEXT NOT NULL
+            )
+        """)
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_drops_release ON drops(release_dt)"
+        )
+
 
 def deal_hash(source: str, title: str, url: str = "") -> str:
     raw = f"{source}|{title}|{url}".lower().strip()
@@ -131,3 +153,83 @@ def get_recent_deals(limit: int = 50) -> list[dict]:
 def count_deals() -> int:
     with _connect() as conn:
         return conn.execute("SELECT COUNT(*) FROM deals").fetchone()[0]
+
+
+# ---------------------------------------------------------------------------
+# Drops
+# ---------------------------------------------------------------------------
+
+def save_drop(drop: dict) -> bool:
+    """Insert a drop, ignore if already exists. Returns True if new."""
+    try:
+        with _connect() as conn:
+            conn.execute(
+                """
+                INSERT OR IGNORE INTO drops
+                    (id, title, brand, release_dt, release_label,
+                     price, url, image, source, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    drop["id"], drop["title"], drop.get("brand", ""),
+                    drop["release_dt"], drop.get("release_label", ""),
+                    drop.get("price", ""), drop.get("url", ""),
+                    drop.get("image", ""), drop.get("source", ""),
+                    datetime.now(timezone.utc).isoformat(),
+                ),
+            )
+            return conn.total_changes > 0
+    except sqlite3.Error:
+        return False
+
+
+def get_drops_needing_notification() -> list[dict]:
+    """Return drops that are due for a 7-day, 1-day, or day-of alert."""
+    now  = datetime.now(timezone.utc)
+    rows_out = []
+
+    with _connect() as conn:
+        rows = conn.execute(
+            "SELECT * FROM drops WHERE release_dt >= ? ORDER BY release_dt",
+            ((now - timedelta(hours=12)).isoformat(),),
+        ).fetchall()
+
+    for row in rows:
+        d = dict(row)
+        try:
+            dt = datetime.fromisoformat(d["release_dt"])
+        except ValueError:
+            continue
+
+        days_away = (dt.date() - now.date()).days
+
+        tier = None
+        if days_away == 0 and not d["notified_today"]:
+            tier = "today"
+        elif days_away == 1 and not d["notified_1day"]:
+            tier = "1day"
+        elif 5 <= days_away <= 7 and not d["notified_7day"]:
+            tier = "7day"
+
+        if tier:
+            d["_notify_tier"] = tier
+            rows_out.append(d)
+
+    return rows_out
+
+
+def mark_drop_notified(drop_id: str, tier: str):
+    col_map = {"today": "notified_today", "1day": "notified_1day", "7day": "notified_7day"}
+    col = col_map.get(tier)
+    if col:
+        with _connect() as conn:
+            conn.execute(f"UPDATE drops SET {col} = 1 WHERE id = ?", (drop_id,))
+
+
+def prune_old_drops(days: int = 7):
+    """Remove drops whose release date has passed by more than N days."""
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+    with _connect() as conn:
+        return conn.execute(
+            "DELETE FROM drops WHERE release_dt < ?", (cutoff,)
+        ).rowcount

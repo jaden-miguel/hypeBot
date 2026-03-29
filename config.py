@@ -33,7 +33,6 @@ DEAL_KEYWORDS = [
     "sale", "drop", "restock", "% off", "discount",
     "clearance", "release", "launch", "limited", "exclusive",
     "markdown", "deal", "price cut", "new arrival",
-    "w2c", "find", "haul", "qc", "in hand", "review",
     "steal", "grail", "heat", "fire", "sleeper",
 ]
 
@@ -41,18 +40,14 @@ DEAL_KEYWORDS = [
 # Reddit
 # ---------------------------------------------------------------------------
 REDDIT_SUBREDDITS = {
-    # Fashion reps & finds
-    "fashionreps":        {"sort": "hot", "limit": 30, "min_upvotes": 20},
-    "repbudgetsneakers":  {"sort": "hot", "limit": 25, "min_upvotes": 15},
-    "qualityreps":        {"sort": "hot", "limit": 20, "min_upvotes": 10},
-    # Legit streetwear & sneakers
-    "streetwear":         {"sort": "hot", "limit": 25, "min_upvotes": 50},
-    "sneakers":           {"sort": "hot", "limit": 25, "min_upvotes": 50},
-    "supremeclothing":    {"sort": "hot", "limit": 20, "min_upvotes": 15},
-    "palaceclothing":     {"sort": "hot", "limit": 20, "min_upvotes": 10},
-    # Deals
-    "frugalmalefashion":  {"sort": "hot", "limit": 25, "min_upvotes": 30},
+    # Streetwear & brand-specific
+    "Goretex_Gear":       {"sort": "hot", "limit": 20, "min_upvotes": 5},
+    "Arcteryx":           {"sort": "hot", "limit": 20, "min_upvotes": 5},
+    "Lululemon":          {"sort": "hot", "limit": 20, "min_upvotes": 5},
+    # Deals & advice
+    "frugalmalefashion":  {"sort": "hot", "limit": 30, "min_upvotes": 20},
     "sneakerdeals":       {"sort": "hot", "limit": 25, "min_upvotes": 10},
+    "malefashionadvice":  {"sort": "new",  "limit": 25, "min_upvotes": 5},
 }
 REDDIT_MIN_UPVOTES_DEFAULT = 10
 
