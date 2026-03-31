@@ -122,9 +122,17 @@ def run_cycle():
         known_ids.add(deal_id)
 
         should_alert = True
-        if ai_result and ai_result.get("verdict") == "pass":
+        if ai_result:
+            verdict = ai_result.get("verdict", "").lower()
             hype = ai_result.get("hype_score", 5)
-            if isinstance(hype, int) and hype < 4:
+            if not isinstance(hype, int):
+                try:
+                    hype = int(hype)
+                except (TypeError, ValueError):
+                    hype = 5
+            if verdict == "skip":
+                should_alert = False
+            elif verdict in ("watch", "maybe") and hype < 4:
                 should_alert = False
 
         if should_alert:

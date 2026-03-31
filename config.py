@@ -36,6 +36,29 @@ DEAL_KEYWORDS = [
     "steal", "grail", "heat", "fire", "sleeper",
 ]
 
+# Items that match brands/keywords but aren't actual clothing or footwear
+EXCLUDED_KEYWORDS = [
+    "subscription", "subscribe", "membership", "member plan",
+    "gift card", "giftcard", "e-gift", "egift",
+    "app release", "mobile app", "download the app",
+    "podcast", "playlist", "spotify", "apple music",
+    "nft", "metaverse", "virtual land", "digital collectible",
+    "crypto", "token sale", "blockchain",
+    "insurance", "warranty plan", "protection plan",
+    "meal kit", "food box", "snack box",
+    "class pass", "fitness class", "training program",
+    "credit card", "debit card", "cash back card",
+    "streaming", "disney+", "hulu", "netflix",
+    "vpn", "software", "saas",
+    "concert ticket", "event ticket", "festival pass",
+    "hotel", "flight", "travel deal", "vacation package",
+    "furniture", "home decor", "candle", "diffuser",
+    "skincare set", "cologne set", "fragrance subscription",
+    "book release", "album release", "video game",
+    "phone case", "airpods", "earbuds", "headphones",
+    "laptop", "tablet", "smart watch",
+]
+
 # ---------------------------------------------------------------------------
 # Reddit
 # ---------------------------------------------------------------------------

@@ -54,6 +54,12 @@ def _matches_interest(text: str) -> bool:
     return any(b in low for b in config.BRANDS) or any(k in low for k in config.DEAL_KEYWORDS)
 
 
+def _is_excluded(text: str) -> bool:
+    """Return True if the text matches a non-clothing item (subscription, gift card, etc.)."""
+    low = text.lower()
+    return any(kw in low for kw in config.EXCLUDED_KEYWORDS)
+
+
 # ---------------------------------------------------------------------------
 # RSS (one function per feed, run in parallel)
 # ---------------------------------------------------------------------------
@@ -67,7 +73,7 @@ def _fetch_single_rss(name: str, url: str) -> list[Deal]:
             summary = entry.get("summary", "")
             link = entry.get("link", "")
             combined = f"{title} {summary}"
-            if _matches_interest(combined):
+            if _matches_interest(combined) and not _is_excluded(combined):
                 deals.append(Deal(
                     source=name,
                     title=title,
@@ -135,7 +141,7 @@ def _fetch_single_web(target: dict) -> list[Deal]:
                 if image and not image.startswith("http"):
                     image = urljoin(target["url"], image)
 
-            if title and _matches_interest(f"{title} {price}"):
+            if title and _matches_interest(f"{title} {price}") and not _is_excluded(f"{title} {price}"):
                 deals.append(Deal(
                     source=target["name"], title=title,
                     url=link, price=price, image=image,
@@ -180,7 +186,13 @@ def _fetch_single_reddit(sub: str, opts: dict) -> list[Deal]:
             flair = post.get("link_flair_text", "") or ""
             combined = f"{title} {selftext} {flair}"
 
-            if _matches_interest(combined) or _is_trending(upvotes, post.get("num_comments", 0)):
+            if _is_excluded(combined):
+                continue
+
+            is_relevant = _matches_interest(combined)
+            is_hot = _is_trending(upvotes, post.get("num_comments", 0))
+
+            if is_relevant or (is_hot and _matches_interest(title)):
                 deals.append(Deal(
                     source=f"r/{sub}",
                     title=title,
