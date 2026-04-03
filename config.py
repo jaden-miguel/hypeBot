@@ -36,6 +36,20 @@ DEAL_KEYWORDS = [
     "steal", "grail", "heat", "fire", "sleeper",
 ]
 
+# At least one of these must appear in an RSS entry for it to pass the
+# pre-filter. Signals that an item is currently buyable, not just announced.
+AVAILABILITY_SIGNALS = [
+    "available now", "available online", "available today",
+    "buy now", "shop now", "order now", "purchase now",
+    "in stock", "on sale now", "officially on sale",
+    "ships now", "ships today", "now available",
+    "you can buy", "you can grab", "you can pick up",
+    "on shelves", "hit shelves", "hitting shelves",
+    "dropped today", "out now", "drops today",
+    "releasing today", "live now", "just dropped",
+    "add to cart", "shop the collection",
+]
+
 # Items that match brands/keywords but aren't actual clothing or footwear
 EXCLUDED_KEYWORDS = [
     "subscription", "subscribe", "membership", "member plan",
@@ -63,11 +77,8 @@ EXCLUDED_KEYWORDS = [
 # Reddit
 # ---------------------------------------------------------------------------
 REDDIT_SUBREDDITS = {
-    # Streetwear & brand-specific
-    "Goretex_Gear":       {"sort": "hot", "limit": 20, "min_upvotes": 5},
     "Arcteryx":           {"sort": "hot", "limit": 20, "min_upvotes": 5},
     "Lululemon":          {"sort": "hot", "limit": 20, "min_upvotes": 5},
-    # Deals & advice
     "frugalmalefashion":  {"sort": "hot", "limit": 30, "min_upvotes": 20},
     "sneakerdeals":       {"sort": "hot", "limit": 25, "min_upvotes": 10},
     "malefashionadvice":  {"sort": "new",  "limit": 25, "min_upvotes": 5},
@@ -97,11 +108,39 @@ SCRAPE_TARGETS = [
         "price_sel": ".product-card__price",
     },
     {
+        "name": "kith_sale",
+        "url": "https://kith.com/collections/sale",
+        "selector": "a.product-card",
+        "title_sel": ".product-card__title",
+        "price_sel": ".product-card__price",
+    },
+    {
         "name": "endclothing_sale",
         "url": "https://www.endclothing.com/us/sale",
         "selector": ".product-card",
         "title_sel": ".product-card__title",
         "price_sel": ".product-card__price",
+    },
+    {
+        "name": "endclothing_new",
+        "url": "https://www.endclothing.com/us/footwear",
+        "selector": ".product-card",
+        "title_sel": ".product-card__title",
+        "price_sel": ".product-card__price",
+    },
+    {
+        "name": "concepts_new",
+        "url": "https://cncpts.com/collections/new-arrivals",
+        "selector": "a.product-item__image-link, a.product-item--link",
+        "title_sel": ".product-item__title",
+        "price_sel": ".price__regular .price-item, .price-item",
+    },
+    {
+        "name": "bodega_new_arrivals",
+        "url": "https://bdgastore.com/collections/new-arrivals",
+        "selector": "a.product-item__image-link",
+        "title_sel": ".product-item__title",
+        "price_sel": ".price__regular .price-item",
     },
 ]
 

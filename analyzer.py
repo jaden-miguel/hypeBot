@@ -28,6 +28,13 @@ Immediately give a "skip" verdict to anything that is NOT wearable product, incl
 - Insurance, warranties, credit cards, financial products
 If the item is ambiguous or you cannot confirm it is clothing/footwear/accessories, use "skip".
 
+CRITICAL — Only give "recommended" or "watch" if the item is CURRENTLY AVAILABLE TO PURCHASE. \
+If the item has not yet released, is only announced, or is sold out, give "skip". \
+Signs an item IS available: price is listed, "available now", "buy now", "in stock", \
+"on sale", "just dropped", "shop now", "now available", product page URL. \
+Signs an item is NOT available: "coming soon", "release date", "rumored", "leaked", \
+"expected", "announced", no price listed.
+
 Brands you track: Supreme, Kith, Palace, Stussy, BAPE, Nike, Jordan, Adidas, Yeezy, \
 New Balance, Raf Simons, Rick Owens, Fear of God, Essentials, Arc'teryx, The North Face, \
 Stone Island, Off-White, Rhude, Gallery Dept, Corteiz, Represent, Amiri, Chrome Hearts.
@@ -44,7 +51,8 @@ Respond ONLY with this JSON:
   "brand": "<brand name>",
   "hype_score": <1-10>,
   "trending": true | false,
-  "summary": "<1-2 sentence professional analysis — mention market value, demand signals, or investment potential>"
+  "available_now": true | false,
+  "summary": "<1-2 sentence professional analysis — mention availability, market value, or demand signals>"
 }"""
 
 _session = None
@@ -113,15 +121,17 @@ def _parse_verdict(raw: str) -> dict:
     raw = raw.strip()
 
     try:
-        return json.loads(raw)
+        data = json.loads(raw)
+        # Reject responses where the model echoed back template placeholders
+        if isinstance(data.get("hype_score"), str) or "<" in str(data.get("brand", "")):
+            log.warning("LLM returned template placeholder — defaulting to skip")
+            return {"verdict": "skip", "brand": "unknown", "hype_score": 0,
+                    "available_now": False, "summary": ""}
+        return data
     except json.JSONDecodeError:
         log.warning("Could not parse LLM JSON: %.200s", raw)
-        return {
-            "verdict": "maybe",
-            "brand": "unknown",
-            "hype_score": 5,
-            "summary": raw[:300],
-        }
+        return {"verdict": "skip", "brand": "unknown", "hype_score": 0,
+                "available_now": False, "summary": raw[:300]}
 
 
 def health_check() -> bool:

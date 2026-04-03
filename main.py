@@ -125,12 +125,15 @@ def run_cycle():
         if ai_result:
             verdict = ai_result.get("verdict", "").lower()
             hype = ai_result.get("hype_score", 5)
+            available_now = ai_result.get("available_now", True)
             if not isinstance(hype, int):
                 try:
                     hype = int(hype)
                 except (TypeError, ValueError):
                     hype = 5
             if verdict == "skip":
+                should_alert = False
+            elif not available_now:
                 should_alert = False
             elif verdict in ("watch", "maybe") and hype < 4:
                 should_alert = False

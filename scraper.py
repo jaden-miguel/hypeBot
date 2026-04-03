@@ -60,6 +60,12 @@ def _is_excluded(text: str) -> bool:
     return any(kw in low for kw in config.EXCLUDED_KEYWORDS)
 
 
+def _has_availability_signal(text: str) -> bool:
+    """Return True if the text indicates the item is currently purchasable."""
+    low = text.lower()
+    return any(sig in low for sig in config.AVAILABILITY_SIGNALS)
+
+
 # ---------------------------------------------------------------------------
 # RSS (one function per feed, run in parallel)
 # ---------------------------------------------------------------------------
@@ -73,14 +79,23 @@ def _fetch_single_rss(name: str, url: str) -> list[Deal]:
             summary = entry.get("summary", "")
             link = entry.get("link", "")
             combined = f"{title} {summary}"
-            if _matches_interest(combined) and not _is_excluded(combined):
-                deals.append(Deal(
-                    source=name,
-                    title=title,
-                    url=link,
-                    summary=summary[:500],
-                    image=_extract_rss_image(entry, summary),
-                ))
+
+            if not _matches_interest(combined):
+                continue
+            if _is_excluded(combined):
+                continue
+            # RSS feeds are mostly editorial — only pass entries that signal
+            # the item is currently purchasable (has a price, "available now", etc.)
+            if not _has_availability_signal(combined):
+                continue
+
+            deals.append(Deal(
+                source=name,
+                title=title,
+                url=link,
+                summary=summary[:500],
+                image=_extract_rss_image(entry, summary),
+            ))
     except Exception:
         log.exception("RSS error for %s", name)
     return deals
@@ -191,8 +206,10 @@ def _fetch_single_reddit(sub: str, opts: dict) -> list[Deal]:
 
             is_relevant = _matches_interest(combined)
             is_hot = _is_trending(upvotes, post.get("num_comments", 0))
+            is_deal_sub = any(s in sub.lower() for s in ("deal", "frugal", "sale", "sneakerdeals"))
+            is_purchasable = _has_availability_signal(combined) or is_deal_sub
 
-            if is_relevant or (is_hot and _matches_interest(title)):
+            if (is_relevant or is_hot) and is_purchasable:
                 deals.append(Deal(
                     source=f"r/{sub}",
                     title=title,
