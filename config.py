@@ -77,10 +77,11 @@ EXCLUDED_KEYWORDS = [
 # Reddit
 # ---------------------------------------------------------------------------
 REDDIT_SUBREDDITS = {
-    "Arcteryx":           {"sort": "hot", "limit": 20, "min_upvotes": 5},
-    "Lululemon":          {"sort": "hot", "limit": 20, "min_upvotes": 5},
     "frugalmalefashion":  {"sort": "hot", "limit": 30, "min_upvotes": 20},
     "sneakerdeals":       {"sort": "hot", "limit": 25, "min_upvotes": 10},
+    "SneakerMarket":      {"sort": "hot", "limit": 25, "min_upvotes": 5},
+    "Arcteryx":           {"sort": "hot", "limit": 20, "min_upvotes": 5},
+    "Lululemon":          {"sort": "hot", "limit": 20, "min_upvotes": 5},
     "malefashionadvice":  {"sort": "new",  "limit": 25, "min_upvotes": 5},
 }
 REDDIT_MIN_UPVOTES_DEFAULT = 10
@@ -95,18 +96,30 @@ RSS_FEEDS = {
     "complexsneakers": "https://www.complex.com/sneakers/feed",
     "grailed_blog": "https://www.grailed.com/drycleanonly/feed",
     "dealmoon_fashion": "https://www.dealmoon.com/en/fashion-clothing/rss",
+    "kicksonfire": "https://www.kicksonfire.com/feed/",
+    "solecollector": "https://solecollector.com/feed/",
 }
 
 # ---------------------------------------------------------------------------
 # Web scrape targets (pages with sale/drop sections)
 # ---------------------------------------------------------------------------
 SCRAPE_TARGETS = [
+    # ── Sale pages (highest flip potential) ──
     {
-        "name": "kith_new_arrivals",
-        "url": "https://kith.com/collections/new-arrivals",
-        "selector": "a.product-card",
+        "name": "nike_sale",
+        "url": "https://www.nike.com/w/sale-3yaep",
+        "selector": ".product-card",
         "title_sel": ".product-card__title",
-        "price_sel": ".product-card__price",
+        "price_sel": ".product-price.is--current-price",
+        "compare_sel": ".product-price.is--striked-out",
+    },
+    {
+        "name": "nike_jordan_sale",
+        "url": "https://www.nike.com/w/jordan-sale-37eefz3yaep",
+        "selector": ".product-card",
+        "title_sel": ".product-card__title",
+        "price_sel": ".product-price.is--current-price",
+        "compare_sel": ".product-price.is--striked-out",
     },
     {
         "name": "kith_sale",
@@ -119,6 +132,22 @@ SCRAPE_TARGETS = [
         "name": "endclothing_sale",
         "url": "https://www.endclothing.com/us/sale",
         "selector": ".product-card",
+        "title_sel": ".product-card__title",
+        "price_sel": ".product-card__price",
+    },
+    {
+        "name": "ssense_sale_men",
+        "url": "https://www.ssense.com/en-us/men/sale",
+        "selector": "div[data-testid='product-card'], .product-tile",
+        "title_sel": ".product-name-plp, .product-tile__name",
+        "price_sel": ".price-sale, .product-tile__price--sale",
+        "compare_sel": ".price-original, .product-tile__price--original",
+    },
+    # ── New arrivals (catch flippable drops early) ──
+    {
+        "name": "kith_new_arrivals",
+        "url": "https://kith.com/collections/new-arrivals",
+        "selector": "a.product-card",
         "title_sel": ".product-card__title",
         "price_sel": ".product-card__price",
     },
@@ -143,21 +172,20 @@ SCRAPE_TARGETS = [
         "title_sel": ".product-item__title",
         "price_sel": ".price__regular .price-item",
     },
+    # ── Nike SNKRS / Jordan restocks ──
     {
-        "name": "ssense_sale_men",
-        "url": "https://www.ssense.com/en-us/men/sale",
-        "selector": "div[data-testid='product-card'], .product-tile",
-        "title_sel": ".product-name-plp, .product-tile__name",
-        "price_sel": ".price-sale, .product-tile__price--sale",
-        "compare_sel": ".price-original, .product-tile__price--original",
-    },
-    {
-        "name": "nike_sale",
-        "url": "https://www.nike.com/w/sale-3yaep",
+        "name": "nike_jordan_new",
+        "url": "https://www.nike.com/w/jordan-shoes-37eefzy7ok",
         "selector": ".product-card",
         "title_sel": ".product-card__title",
         "price_sel": ".product-price.is--current-price",
-        "compare_sel": ".product-price.is--striked-out",
+    },
+    {
+        "name": "nike_dunk",
+        "url": "https://www.nike.com/w/dunk-shoes-90aohzy7ok",
+        "selector": ".product-card",
+        "title_sel": ".product-card__title",
+        "price_sel": ".product-price.is--current-price",
     },
 ]
 

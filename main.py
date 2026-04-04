@@ -17,6 +17,7 @@ import database
 import scraper
 import analyzer
 import alerts
+import resale
 import drops as drop_scraper
 
 _shutdown = False
@@ -49,11 +50,18 @@ logging.basicConfig(level=logging.INFO, handlers=[console, file_handler])
 log = logging.getLogger("hypebot")
 
 
-def _quality_score(deal: dict, ai: dict | None) -> float:
-    """Compute a quality score to rank deals. Higher = better deal."""
+def _quality_score(deal: dict, ai: dict | None, flip: dict | None = None) -> float:
+    """Compute a quality score to rank deals. Higher = better deal.
+    Flip potential is the heaviest weight — money-making opportunities rank first."""
     score = 0.0
     disc = deal.get("discount_pct", 0) or 0
     score += disc * 2.0                         # 40% off → +80
+
+    if flip:
+        score += flip.get("flip_score", 0) * 2  # flip 70 → +140 (dominant factor)
+        profit = flip.get("est_profit_low", 0)
+        if profit > 0:
+            score += min(profit, 200)            # $100 profit → +100 (capped 200)
 
     if ai:
         hype = ai.get("hype_score", 0)
@@ -114,8 +122,9 @@ def run_cycle():
     if not ollama_ok:
         log.warning("Ollama unreachable — skipping AI analysis this cycle")
 
-    # Phase 1: dedup, classify, and score all deals
-    candidates: list[tuple[dict, dict | None, float]] = []
+    # Phase 1: dedup, classify, estimate resale, and score all deals
+    # candidates: (deal, ai_result, flip_estimate, quality_score)
+    candidates: list[tuple[dict, dict | None, dict | None, float]] = []
     new_count = 0
 
     for deal in raw_deals:
@@ -178,8 +187,12 @@ def run_cycle():
         known_ids.add(deal_id)
         new_count += 1
 
-        # Quick-reject before scoring
-        if ai_result:
+        # Resale profit estimation
+        flip_est = resale.estimate_resale(deal)
+
+        # Quick-reject before scoring — but never reject strong flips
+        is_strong_flip = flip_est.get("flip_score", 0) >= 50
+        if ai_result and not is_strong_flip:
             verdict = ai_result.get("verdict", "").lower()
             available = ai_result.get("available_now", True)
             hype = ai_result.get("hype_score", 0)
@@ -194,18 +207,18 @@ def run_cycle():
             if verdict in ("watch", "maybe") and hype < MIN_HYPE_TO_ALERT:
                 continue
 
-        score = _quality_score(deal, ai_result)
-        candidates.append((deal, ai_result, score))
+        score = _quality_score(deal, ai_result, flip_est)
+        candidates.append((deal, ai_result, flip_est, score))
 
     # Phase 2: rank by quality and alert only the top deals
-    candidates.sort(key=lambda c: c[2], reverse=True)
+    candidates.sort(key=lambda c: c[3], reverse=True)
     alert_count = 0
 
-    for deal, ai_result, score in candidates[:MAX_ALERTS_PER_CYCLE]:
+    for deal, ai_result, flip_est, score in candidates[:MAX_ALERTS_PER_CYCLE]:
         if _shutdown:
             break
         deal_id = database.deal_hash(deal["source"], deal["title"], deal["url"])
-        alerts.send_alert(deal, ai_result)
+        alerts.send_alert(deal, ai_result, flip_est)
         database.mark_alerted(deal_id)
         alert_count += 1
 
@@ -213,8 +226,8 @@ def run_cycle():
         log.info(
             "Capped alerts: %d qualified, sent top %d (scores %.0f–%.0f)",
             len(candidates), alert_count,
-            candidates[0][2] if candidates else 0,
-            candidates[min(alert_count, len(candidates)) - 1][2] if candidates else 0,
+            candidates[0][3] if candidates else 0,
+            candidates[min(alert_count, len(candidates)) - 1][3] if candidates else 0,
         )
 
     elapsed = time.monotonic() - t0

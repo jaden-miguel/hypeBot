@@ -43,8 +43,8 @@ SOURCE_EMOJI = {
 }
 
 
-def send_alert(deal: dict, analysis: dict | None = None):
-    msg = _format_message(deal, analysis)
+def send_alert(deal: dict, analysis: dict | None = None, flip: dict | None = None):
+    msg = _format_message(deal, analysis, flip)
     log.info("ALERT: %s", msg["title"])
     if config.TELEGRAM_BOT_TOKEN and config.TELEGRAM_CHAT_ID:
         _send_telegram(msg)
@@ -55,7 +55,7 @@ def send_alert(deal: dict, analysis: dict | None = None):
     _log_to_console(msg)
 
 
-def _format_message(deal: dict, analysis: dict | None) -> dict:
+def _format_message(deal: dict, analysis: dict | None, flip: dict | None = None) -> dict:
     verdict_key = ""
     hype_score  = 0
     ai_summary  = ""
@@ -69,6 +69,23 @@ def _format_message(deal: dict, analysis: dict | None) -> dict:
 
     discount_pct   = deal.get("discount_pct", 0) or 0
     original_price = deal.get("original_price", "") or ""
+
+    flip_score      = 0
+    flip_verdict    = ""
+    est_profit_low  = 0.0
+    est_profit_high = 0.0
+    est_resale_low  = 0.0
+    est_resale_high = 0.0
+    flip_signals    = []
+
+    if flip:
+        flip_score      = flip.get("flip_score", 0)
+        flip_verdict    = flip.get("flip_verdict", "")
+        est_profit_low  = flip.get("est_profit_low", 0)
+        est_profit_high = flip.get("est_profit_high", 0)
+        est_resale_low  = flip.get("est_resale_low", 0)
+        est_resale_high = flip.get("est_resale_high", 0)
+        flip_signals    = flip.get("signals", [])
 
     return {
         "title":          deal.get("title", "Unknown Deal"),
@@ -85,6 +102,13 @@ def _format_message(deal: dict, analysis: dict | None) -> dict:
         "hype_score":     hype_score,
         "ai_summary":     ai_summary,
         "trending":       trending,
+        "flip_score":     flip_score,
+        "flip_verdict":   flip_verdict,
+        "est_profit_low": est_profit_low,
+        "est_profit_high": est_profit_high,
+        "est_resale_low": est_resale_low,
+        "est_resale_high": est_resale_high,
+        "flip_signals":   flip_signals,
     }
 
 
@@ -106,6 +130,13 @@ def _hype_bar(score: int) -> str:
     return f"{filled}{empty} {score}/10"
 
 
+_FLIP_BADGE = {
+    "strong flip":  ("💰🔥", "STRONG FLIP"),
+    "possible flip": ("💰", "POSSIBLE FLIP"),
+    "hold value":   ("📈", "HOLDS VALUE"),
+}
+
+
 def _build_telegram_html(msg: dict) -> str:
     e = _h
 
@@ -114,11 +145,24 @@ def _build_telegram_html(msg: dict) -> str:
     v_label   = VERDICT_LABEL.get(verdict, verdict.title() if verdict else "")
     src_emoji = SOURCE_EMOJI.get(msg["source"], "📡")
     disc      = msg.get("discount_pct", 0)
+    flip_v    = msg.get("flip_verdict", "")
+    flip_s    = msg.get("flip_score", 0)
 
     lines = []
 
+    # ── Flip alert banner ──
+    if flip_v in _FLIP_BADGE:
+        f_emoji, f_label = _FLIP_BADGE[flip_v]
+        profit_low = msg.get("est_profit_low", 0)
+        profit_high = msg.get("est_profit_high", 0)
+        if profit_low > 0:
+            lines.append(f"{f_emoji}  <b>{f_label}  —  est. +${profit_low:.0f}–${profit_high:.0f} profit</b>")
+        else:
+            lines.append(f"{f_emoji}  <b>{f_label}</b>")
+        lines.append("")
+
     # ── Deal badge ──
-    if disc >= 15:
+    if disc >= 15 and flip_v not in _FLIP_BADGE:
         lines.append(f"🏷  <b>{disc}% OFF</b>")
         lines.append("")
 
@@ -141,6 +185,12 @@ def _build_telegram_html(msg: dict) -> str:
             lines.append(f"💰  <b>{e(msg['price'])}</b>  <s>{e(orig)}</s>  ({disc}% off)")
         else:
             lines.append(f"💰  <b>{e(msg['price'])}</b>")
+
+    # ── Resale estimate ──
+    resale_low = msg.get("est_resale_low", 0)
+    resale_high = msg.get("est_resale_high", 0)
+    if resale_low > 0 and flip_s >= 20:
+        lines.append(f"📊  Resale est: <b>${resale_low:.0f}–${resale_high:.0f}</b>")
 
     # ── Source ──
     lines.append(f"{src_emoji}  {e(msg['source'])}")
@@ -231,20 +281,39 @@ def _send_discord(msg: dict):
     v_emoji  = VERDICT_EMOJI.get(verdict, "💡")
     hype_bar = _hype_bar(msg["hype_score"])
     disc     = msg.get("discount_pct", 0)
+    flip_v   = msg.get("flip_verdict", "")
+    flip_s   = msg.get("flip_score", 0)
 
     v_label  = VERDICT_LABEL.get(verdict, verdict.title() if verdict else "")
 
-    title_prefix = f"🏷 {disc}% OFF — " if disc >= 15 else ""
+    # Title prefix: flip alert takes priority over plain discount badge
+    if flip_v in _FLIP_BADGE:
+        f_emoji, f_label = _FLIP_BADGE[flip_v]
+        title_prefix = f"{f_emoji} {f_label} — "
+    elif disc >= 15:
+        title_prefix = f"🏷 {disc}% OFF — "
+    else:
+        title_prefix = ""
 
     price_display = msg["price"] or "N/A"
     orig = msg.get("original_price", "")
     if orig and disc:
         price_display = f"{msg['price']}  ~~{orig}~~  ({disc}% off)"
 
+    # Gold color for strong flips
+    if flip_s >= 65:
+        color = 0xFFD700
+    elif flip_s >= 40:
+        color = 0xFFA000
+    elif disc >= 30:
+        color = 0xFF1744
+    else:
+        color = VERDICT_COLOR.get(verdict, 0x7C4DFF)
+
     embed = {
         "title":       f"{title_prefix}{msg['title']}"[:256],
         "url":         msg["url"] or None,
-        "color":       0xFF1744 if disc >= 30 else VERDICT_COLOR.get(verdict, 0x7C4DFF),
+        "color":       color,
         "description": msg["ai_summary"][:300] if msg["ai_summary"] else None,
         "fields":      [
             {"name": "Source",  "value": msg["source"],  "inline": True},
@@ -252,6 +321,20 @@ def _send_discord(msg: dict):
         ],
         "footer": {"text": "HypeBot • Streetwear Intelligence"},
     }
+
+    if flip_s >= 20:
+        profit_low = msg.get("est_profit_low", 0)
+        profit_high = msg.get("est_profit_high", 0)
+        resale_low = msg.get("est_resale_low", 0)
+        resale_high = msg.get("est_resale_high", 0)
+        flip_text = f"Resale est: ${resale_low:.0f}–${resale_high:.0f}"
+        if profit_low > 0:
+            flip_text += f"\nEst. profit: +${profit_low:.0f}–${profit_high:.0f}"
+        embed["fields"].append({
+            "name": "💰 Flip Potential",
+            "value": flip_text,
+            "inline": True,
+        })
 
     if msg["upvotes"] or msg["comments"]:
         embed["fields"].append({
@@ -321,9 +404,19 @@ def _log_to_console(msg: dict):
     v_label  = VERDICT_LABEL.get(verdict, verdict.title() if verdict else "")
     hype_bar = _hype_bar(msg["hype_score"])
     disc     = msg.get("discount_pct", 0)
+    flip_v   = msg.get("flip_verdict", "")
+    flip_s   = msg.get("flip_score", 0)
     sep = "─" * 62
     print(f"\n{sep}")
-    if disc >= 15:
+    if flip_v in _FLIP_BADGE:
+        f_emoji, f_label = _FLIP_BADGE[flip_v]
+        profit_low = msg.get("est_profit_low", 0)
+        profit_high = msg.get("est_profit_high", 0)
+        if profit_low > 0:
+            print(f"  {f_emoji}  {f_label}  —  est. +${profit_low:.0f}–${profit_high:.0f} profit")
+        else:
+            print(f"  {f_emoji}  {f_label}")
+    elif disc >= 15:
         print(f"  🏷  {disc}% OFF")
     print(f"  {msg['title']}")
     if msg["price"]:
@@ -332,6 +425,10 @@ def _log_to_console(msg: dict):
             print(f"  💰 {msg['price']}  (was {orig}, {disc}% off)")
         else:
             print(f"  💰 {msg['price']}")
+    if flip_s >= 20:
+        resale_low = msg.get("est_resale_low", 0)
+        resale_high = msg.get("est_resale_high", 0)
+        print(f"  📊 Resale est: ${resale_low:.0f}–${resale_high:.0f}")
     print(f"  📡 {msg['source']}")
     if msg["upvotes"] or msg["comments"]:
         print(f"  ⬆️  {msg['upvotes']:,} upvotes   💬 {msg['comments']:,} comments")
