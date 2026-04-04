@@ -62,19 +62,24 @@ def _format_message(deal: dict, analysis: dict | None) -> dict:
         ai_summary  = analysis.get("summary", "")
         trending    = bool(analysis.get("trending", False))
 
+    discount_pct   = deal.get("discount_pct", 0) or 0
+    original_price = deal.get("original_price", "") or ""
+
     return {
-        "title":      deal.get("title", "Unknown Deal"),
-        "url":        deal.get("url", ""),
-        "price":      deal.get("price", "") or "",
-        "source":     deal.get("source", ""),
-        "image":      deal.get("image", ""),
-        "upvotes":    deal.get("upvotes", 0),
-        "comments":   deal.get("comments", 0),
-        "flair":      deal.get("flair", ""),
-        "verdict":    verdict_key,
-        "hype_score": hype_score,
-        "ai_summary": ai_summary,
-        "trending":   trending,
+        "title":          deal.get("title", "Unknown Deal"),
+        "url":            deal.get("url", ""),
+        "price":          deal.get("price", "") or "",
+        "original_price": original_price,
+        "discount_pct":   discount_pct,
+        "source":         deal.get("source", ""),
+        "image":          deal.get("image", ""),
+        "upvotes":        deal.get("upvotes", 0),
+        "comments":       deal.get("comments", 0),
+        "flair":          deal.get("flair", ""),
+        "verdict":        verdict_key,
+        "hype_score":     hype_score,
+        "ai_summary":     ai_summary,
+        "trending":       trending,
     }
 
 
@@ -103,8 +108,14 @@ def _build_telegram_html(msg: dict) -> str:
     v_emoji   = VERDICT_EMOJI.get(verdict, "💡")
     v_label   = VERDICT_LABEL.get(verdict, verdict.title() if verdict else "")
     src_emoji = SOURCE_EMOJI.get(msg["source"], "📡")
+    disc      = msg.get("discount_pct", 0)
 
     lines = []
+
+    # ── Deal badge ──
+    if disc >= 15:
+        lines.append(f"🏷  <b>{disc}% OFF</b>")
+        lines.append("")
 
     # ── Title ──
     if msg["url"]:
@@ -120,7 +131,11 @@ def _build_telegram_html(msg: dict) -> str:
 
     # ── Price ──
     if msg["price"]:
-        lines.append(f"💰  <b>{e(msg['price'])}</b>")
+        orig = msg.get("original_price", "")
+        if orig and disc:
+            lines.append(f"💰  <b>{e(msg['price'])}</b>  <s>{e(orig)}</s>  ({disc}% off)")
+        else:
+            lines.append(f"💰  <b>{e(msg['price'])}</b>")
 
     # ── Source ──
     lines.append(f"{src_emoji}  {e(msg['source'])}")
@@ -200,17 +215,25 @@ def _send_discord(msg: dict):
     verdict  = msg["verdict"]
     v_emoji  = VERDICT_EMOJI.get(verdict, "💡")
     hype_bar = _hype_bar(msg["hype_score"])
+    disc     = msg.get("discount_pct", 0)
 
     v_label  = VERDICT_LABEL.get(verdict, verdict.title() if verdict else "")
 
+    title_prefix = f"🏷 {disc}% OFF — " if disc >= 15 else ""
+
+    price_display = msg["price"] or "N/A"
+    orig = msg.get("original_price", "")
+    if orig and disc:
+        price_display = f"{msg['price']}  ~~{orig}~~  ({disc}% off)"
+
     embed = {
-        "title":       msg["title"][:256],
+        "title":       f"{title_prefix}{msg['title']}"[:256],
         "url":         msg["url"] or None,
-        "color":       VERDICT_COLOR.get(verdict, 0x7C4DFF),
+        "color":       0xFF1744 if disc >= 30 else VERDICT_COLOR.get(verdict, 0x7C4DFF),
         "description": msg["ai_summary"][:300] if msg["ai_summary"] else None,
         "fields":      [
-            {"name": "Source",  "value": msg["source"],         "inline": True},
-            {"name": "Price",   "value": msg["price"] or "N/A", "inline": True},
+            {"name": "Source",  "value": msg["source"],  "inline": True},
+            {"name": "Price",   "value": price_display,  "inline": True},
         ],
         "footer": {"text": "HypeBot • Streetwear Intelligence"},
     }
@@ -282,11 +305,18 @@ def _log_to_console(msg: dict):
     v_emoji  = VERDICT_EMOJI.get(verdict, "💡")
     v_label  = VERDICT_LABEL.get(verdict, verdict.title() if verdict else "")
     hype_bar = _hype_bar(msg["hype_score"])
+    disc     = msg.get("discount_pct", 0)
     sep = "─" * 62
     print(f"\n{sep}")
+    if disc >= 15:
+        print(f"  🏷  {disc}% OFF")
     print(f"  {msg['title']}")
     if msg["price"]:
-        print(f"  💰 {msg['price']}")
+        orig = msg.get("original_price", "")
+        if orig and disc:
+            print(f"  💰 {msg['price']}  (was {orig}, {disc}% off)")
+        else:
+            print(f"  💰 {msg['price']}")
     print(f"  📡 {msg['source']}")
     if msg["upvotes"] or msg["comments"]:
         print(f"  ⬆️  {msg['upvotes']:,} upvotes   💬 {msg['comments']:,} comments")

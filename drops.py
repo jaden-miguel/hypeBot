@@ -4,6 +4,7 @@ release dates from RSS feeds. Provides structured Drop objects
 with release_dt so the main loop can fire time-based alerts.
 """
 
+import hashlib
 import logging
 import re
 import time
@@ -83,7 +84,6 @@ def _parse_date(text: str) -> datetime | None:
 
 
 def _drop_id(title: str, release_dt: str) -> str:
-    import hashlib
     raw = f"{title.lower().strip()}|{release_dt[:10]}"
     return hashlib.sha256(raw.encode()).hexdigest()[:16]
 
@@ -113,10 +113,14 @@ def _format_label(dt: datetime, has_time: bool = False) -> str:
     return base
 
 
+_session = None
+
 def _get_session() -> requests.Session:
-    s = requests.Session()
-    s.headers.update(config.REQUEST_HEADERS)
-    return s
+    global _session
+    if _session is None:
+        _session = requests.Session()
+        _session.headers.update(config.REQUEST_HEADERS)
+    return _session
 
 
 # ---------------------------------------------------------------------------

@@ -3,6 +3,7 @@ Scraper module — concurrent RSS, web, and Reddit fetching.
 """
 
 import logging
+import re
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, asdict
@@ -17,6 +18,12 @@ import config
 log = logging.getLogger(__name__)
 
 _session = None
+
+# Precompile keyword lists once for fast substring matching
+_BRANDS = config.BRANDS
+_DEAL_KW = config.DEAL_KEYWORDS
+_EXCLUDED = config.EXCLUDED_KEYWORDS
+_AVAIL = config.AVAILABILITY_SIGNALS
 
 
 def _get_session() -> requests.Session:
@@ -42,6 +49,8 @@ class Deal:
     title: str
     url: str = ""
     price: str = ""
+    original_price: str = ""
+    discount_pct: int = 0
     summary: str = ""
     image: str = ""
     upvotes: int = 0
@@ -51,19 +60,45 @@ class Deal:
 
 def _matches_interest(text: str) -> bool:
     low = text.lower()
-    return any(b in low for b in config.BRANDS) or any(k in low for k in config.DEAL_KEYWORDS)
+    return any(b in low for b in _BRANDS) or any(k in low for k in _DEAL_KW)
 
 
 def _is_excluded(text: str) -> bool:
-    """Return True if the text matches a non-clothing item (subscription, gift card, etc.)."""
     low = text.lower()
-    return any(kw in low for kw in config.EXCLUDED_KEYWORDS)
+    return any(kw in low for kw in _EXCLUDED)
 
 
 def _has_availability_signal(text: str) -> bool:
-    """Return True if the text indicates the item is currently purchasable."""
     low = text.lower()
-    return any(sig in low for sig in config.AVAILABILITY_SIGNALS)
+    return any(sig in low for sig in _AVAIL)
+
+
+# ---------------------------------------------------------------------------
+# Discount detection
+# ---------------------------------------------------------------------------
+
+_PCT_RE = re.compile(r"(\d{1,2})\s*%\s*off", re.IGNORECASE)
+_PRICE_RE = re.compile(r"\$\s*([\d,]+(?:\.\d{2})?)")
+
+
+def _detect_discount(price_text: str, compare_text: str = "") -> tuple[int, str]:
+    """Return (discount_pct, original_price_str). 0 means no discount detected."""
+    combined = f"{price_text} {compare_text}"
+
+    m = _PCT_RE.search(combined)
+    if m:
+        return int(m.group(1)), ""
+
+    prices = _PRICE_RE.findall(combined)
+    if len(prices) >= 2:
+        nums = [float(p.replace(",", "")) for p in prices]
+        hi, lo = max(nums), min(nums)
+        if hi > lo > 0:
+            pct = int(round((1 - lo / hi) * 100))
+            if pct >= 5:
+                return pct, f"${hi:,.0f}"
+
+    return 0, ""
 
 
 # ---------------------------------------------------------------------------
@@ -133,34 +168,53 @@ def _is_image_url(url: str) -> bool:
 
 def _fetch_single_web(target: dict) -> list[Deal]:
     deals = []
+    is_sale_page = any(s in target["name"].lower() for s in ("sale", "clearance", "markdown"))
     try:
         session = _get_session()
         resp = session.get(target["url"], timeout=config.REQUEST_TIMEOUT)
         resp.raise_for_status()
         soup = BeautifulSoup(resp.text, "html.parser")
 
-        for card in soup.select(target["selector"])[:30]:
+        for card in soup.select(target["selector"])[:40]:
             title_el = card.select_one(target.get("title_sel", ""))
             price_el = card.select_one(target.get("price_sel", ""))
             title = title_el.get_text(strip=True) if title_el else ""
             price = price_el.get_text(strip=True) if price_el else ""
+
+            # Try to find a compare-at / original price (strikethrough text)
+            compare_text = ""
+            compare_el = card.select_one(
+                target.get("compare_sel", "")
+                or ".compare-at-price, .price--compare, .was-price, "
+                   "s, del, .price-item--regular, .product-card__compare-price"
+            )
+            if compare_el:
+                compare_text = compare_el.get_text(strip=True)
 
             link = card.get("href", "")
             if link and not link.startswith("http"):
                 link = urljoin(target["url"], link)
 
             image = ""
-            img_el = card.select_one("img[src]")
+            img_el = card.select_one("img[src], img[data-src]")
             if img_el:
                 image = img_el.get("src", "") or img_el.get("data-src", "")
                 if image and not image.startswith("http"):
                     image = urljoin(target["url"], image)
 
-            if title and _matches_interest(f"{title} {price}") and not _is_excluded(f"{title} {price}"):
-                deals.append(Deal(
-                    source=target["name"], title=title,
-                    url=link, price=price, image=image,
-                ))
+            combined = f"{title} {price}"
+            if not title or _is_excluded(combined):
+                continue
+            if not is_sale_page and not _matches_interest(combined):
+                continue
+
+            disc_pct, orig_price = _detect_discount(price, compare_text)
+
+            deals.append(Deal(
+                source=target["name"], title=title,
+                url=link, price=price, image=image,
+                original_price=orig_price, discount_pct=disc_pct,
+            ))
     except Exception:
         log.exception("Web scrape error for %s", target["name"])
     return deals

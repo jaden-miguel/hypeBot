@@ -94,6 +94,7 @@ RSS_FEEDS = {
     "sneakernews": "https://sneakernews.com/feed/",
     "complexsneakers": "https://www.complex.com/sneakers/feed",
     "grailed_blog": "https://www.grailed.com/drycleanonly/feed",
+    "dealmoon_fashion": "https://www.dealmoon.com/en/fashion-clothing/rss",
 }
 
 # ---------------------------------------------------------------------------
@@ -141,6 +142,22 @@ SCRAPE_TARGETS = [
         "selector": "a.product-item__image-link",
         "title_sel": ".product-item__title",
         "price_sel": ".price__regular .price-item",
+    },
+    {
+        "name": "ssense_sale_men",
+        "url": "https://www.ssense.com/en-us/men/sale",
+        "selector": "div[data-testid='product-card'], .product-tile",
+        "title_sel": ".product-name-plp, .product-tile__name",
+        "price_sel": ".price-sale, .product-tile__price--sale",
+        "compare_sel": ".price-original, .product-tile__price--original",
+    },
+    {
+        "name": "nike_sale",
+        "url": "https://www.nike.com/w/sale-3yaep",
+        "selector": ".product-card",
+        "title_sel": ".product-card__title",
+        "price_sel": ".product-price.is--current-price",
+        "compare_sel": ".product-price.is--striked-out",
     },
 ]
 

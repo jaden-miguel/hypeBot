@@ -94,8 +94,26 @@ def run_cycle():
         if deal_id in known_ids:
             continue
 
+        # Web-scraped products with a price are already purchasable —
+        # skip the slow Ollama call and auto-recommend them.
+        is_web_deal = (
+            deal.get("price")
+            and not deal.get("summary")
+            and not deal.get("upvotes")
+        )
+
         ai_result = None
-        if ollama_ok:
+        if is_web_deal:
+            disc = deal.get("discount_pct", 0)
+            ai_result = {
+                "verdict": "recommended" if disc >= 15 else "watch",
+                "brand": "",
+                "hype_score": min(10, 5 + disc // 10),
+                "trending": disc >= 30,
+                "available_now": True,
+                "summary": f"{disc}% off — sale price" if disc else "In stock at retail",
+            }
+        elif ollama_ok:
             ai_result = analyzer.analyze_deal(
                 title=deal["title"],
                 summary=deal.get("summary", ""),
