@@ -187,6 +187,46 @@ SCRAPE_TARGETS = [
         "title_sel": ".product-card__title",
         "price_sel": ".product-price.is--current-price",
     },
+    # ── Hidden / deep clearance pages (most shoppers miss these) ──
+    {
+        "name": "nike_clearance_shoes",
+        "url": "https://www.nike.com/w/clearance-shoes-5e1x6zy7ok",
+        "selector": ".product-card",
+        "title_sel": ".product-card__title",
+        "price_sel": ".product-price.is--current-price",
+        "compare_sel": ".product-price.is--striked-out",
+    },
+    {
+        "name": "nike_jordan_clearance",
+        "url": "https://www.nike.com/w/jordan-clearance-37eefz5e1x6",
+        "selector": ".product-card",
+        "title_sel": ".product-card__title",
+        "price_sel": ".product-price.is--current-price",
+        "compare_sel": ".product-price.is--striked-out",
+    },
+    {
+        "name": "end_sale_footwear",
+        "url": "https://www.endclothing.com/us/sale/footwear",
+        "selector": ".product-card",
+        "title_sel": ".product-card__title",
+        "price_sel": ".product-card__price",
+    },
+    {
+        "name": "ssense_sale_50plus",
+        "url": "https://www.ssense.com/en-us/men/sale?discount%5B%5D=50",
+        "selector": "div[data-testid='product-card'], .product-tile",
+        "title_sel": ".product-name-plp, .product-tile__name",
+        "price_sel": ".price-sale, .product-tile__price--sale",
+        "compare_sel": ".price-original, .product-tile__price--original",
+    },
+    {
+        "name": "nordstrom_rack_sneakers",
+        "url": "https://www.nordstromrack.com/shop/Men/Shoes/Sneakers%20%26%20Athletic",
+        "selector": ".product-card, [data-testid='product-card']",
+        "title_sel": ".product-title, [data-testid='product-title']",
+        "price_sel": ".sale-price, [data-testid='sale-price']",
+        "compare_sel": ".compare-price, [data-testid='compare-price']",
+    },
 ]
 
 # ---------------------------------------------------------------------------

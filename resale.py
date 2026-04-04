@@ -97,6 +97,54 @@ _SCARCITY_SIGNALS = {
 
 _PRICE_RE = re.compile(r"\$\s*([\d,]+(?:\.\d{2})?)")
 
+# Retail price floors — if buy price is below this, it's likely a price error
+# or an absurd deal that needs immediate action. Keyed by regex pattern.
+_RETAIL_FLOORS: list[tuple[re.Pattern, float]] = [
+    (re.compile(r"air jordan 1\b|aj1\b", re.I),   170),
+    (re.compile(r"air jordan 4\b|aj4\b", re.I),   200),
+    (re.compile(r"air jordan 3\b|aj3\b", re.I),   200),
+    (re.compile(r"air jordan 11\b|aj11\b", re.I),  225),
+    (re.compile(r"dunk low\b", re.I),              110),
+    (re.compile(r"dunk high\b", re.I),             120),
+    (re.compile(r"air force 1\b|af1\b", re.I),    110),
+    (re.compile(r"air max 1\b", re.I),             140),
+    (re.compile(r"air max 90\b", re.I),            130),
+    (re.compile(r"air max 95\b", re.I),            185),
+    (re.compile(r"yeezy 350\b|yeezy boost 350", re.I), 230),
+    (re.compile(r"yeezy 700\b", re.I),             240),
+    (re.compile(r"yeezy slide\b", re.I),           70),
+    (re.compile(r"new balance 990\b|nb 990\b", re.I), 200),
+    (re.compile(r"new balance 550\b|nb 550\b", re.I), 110),
+    (re.compile(r"new balance 2002r\b|nb 2002r", re.I), 140),
+    (re.compile(r"samba\b.*adidas|adidas.*samba", re.I), 100),
+    (re.compile(r"gazelle\b.*adidas|adidas.*gazelle", re.I), 100),
+    (re.compile(r"ultraboost\b", re.I),            190),
+    (re.compile(r"fear of god|fog\b", re.I),       150),
+    (re.compile(r"essentials\b", re.I),            60),
+    (re.compile(r"supreme.*box logo|box logo.*supreme", re.I), 180),
+    (re.compile(r"arc.teryx.*jacket|jacket.*arc.teryx", re.I), 350),
+    (re.compile(r"stone island.*crewneck|crewneck.*stone island", re.I), 300),
+]
+
+
+def _check_price_error(text: str, buy_price: float) -> dict | None:
+    """Detect if an item is priced far below its known retail floor.
+    Returns price error info or None."""
+    if buy_price <= 0:
+        return None
+    for pattern, floor in _RETAIL_FLOORS:
+        if pattern.search(text):
+            if buy_price < floor * 0.45:
+                return {
+                    "is_price_error": True,
+                    "expected_retail": floor,
+                    "paid": buy_price,
+                    "savings_pct": round((1 - buy_price / floor) * 100),
+                    "severity": "extreme" if buy_price < floor * 0.3 else "likely",
+                }
+            break
+    return None
+
 
 def _parse_price(text: str) -> float:
     """Extract a numeric price from text like '$149.99' or '$85'."""
@@ -218,10 +266,22 @@ def estimate_resale(deal: dict) -> dict:
     else:
         verdict = "depreciates"
 
+    price_error = _check_price_error(combined, buy_price)
+    if price_error:
+        signals.append("PRICE ERROR")
+        flip_score = min(flip_score + 40, 100)
+        if flip_score < 65:
+            flip_score = 80
+        verdict = "strong flip"
+
     roi_pct = round((est_profit_low / buy_price) * 100) if buy_price and est_profit_low > 0 else 0
 
     platforms = _recommend_platforms(combined, buy_price, model, brand)
     urgency = _assess_urgency(combined, disc_pct, model, scarcity)
+
+    if price_error:
+        urgency = {"level": "critical", "label": "ACT NOW",
+                   "reason": f"Possible price error — {price_error['savings_pct']}% below retail ${price_error['expected_retail']:.0f}"}
 
     return {
         "flip_score": flip_score,
@@ -235,6 +295,7 @@ def estimate_resale(deal: dict) -> dict:
         "roi_pct": roi_pct,
         "platforms": platforms,
         "urgency": urgency,
+        "price_error": price_error,
     }
 
 

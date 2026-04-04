@@ -166,9 +166,21 @@ def _is_image_url(url: str) -> bool:
 # Web scraping
 # ---------------------------------------------------------------------------
 
+_LOW_STOCK_RE = re.compile(
+    r"only \d+ left|few (sizes? )?left|limited sizes|selling fast|"
+    r"almost gone|last (pair|one|few)|low stock|hurry|going fast",
+    re.IGNORECASE,
+)
+
+
+def _detect_low_stock(card_html: str) -> bool:
+    """Check if a product card contains low-stock signals."""
+    return bool(_LOW_STOCK_RE.search(card_html))
+
+
 def _fetch_single_web(target: dict) -> list[Deal]:
     deals = []
-    is_sale_page = any(s in target["name"].lower() for s in ("sale", "clearance", "markdown"))
+    is_sale_page = any(s in target["name"].lower() for s in ("sale", "clearance", "markdown", "reduction"))
     try:
         session = _get_session()
         resp = session.get(target["url"], timeout=config.REQUEST_TIMEOUT)
@@ -181,7 +193,6 @@ def _fetch_single_web(target: dict) -> list[Deal]:
             title = title_el.get_text(strip=True) if title_el else ""
             price = price_el.get_text(strip=True) if price_el else ""
 
-            # Try to find a compare-at / original price (strikethrough text)
             compare_text = ""
             compare_el = card.select_one(
                 target.get("compare_sel", "")
@@ -210,10 +221,18 @@ def _fetch_single_web(target: dict) -> list[Deal]:
 
             disc_pct, orig_price = _detect_discount(price, compare_text)
 
+            card_text = card.get_text(" ", strip=True)
+            low_stock = _detect_low_stock(card_text)
+
+            flair = ""
+            if low_stock:
+                flair = "LOW STOCK"
+
             deals.append(Deal(
                 source=target["name"], title=title,
                 url=link, price=price, image=image,
                 original_price=orig_price, discount_pct=disc_pct,
+                flair=flair,
             ))
     except Exception:
         log.exception("Web scrape error for %s", target["name"])
@@ -260,10 +279,27 @@ def _fetch_single_reddit(sub: str, opts: dict) -> list[Deal]:
 
             is_relevant = _matches_interest(combined)
             is_hot = _is_trending(upvotes, post.get("num_comments", 0))
-            is_deal_sub = any(s in sub.lower() for s in ("deal", "frugal", "sale", "sneakerdeals"))
+            is_deal_sub = any(s in sub.lower() for s in ("deal", "frugal", "sale", "sneakerdeals", "sneakermarket"))
             is_purchasable = _has_availability_signal(combined) or is_deal_sub
 
-            if (is_relevant or is_hot) and is_purchasable:
+            is_urgent = any(kw in combined.lower() for kw in _URGENT_KEYWORDS)
+
+            promo_code = ""
+            pm = _PROMO_RE.search(combined)
+            if pm:
+                promo_code = (pm.group(1) or pm.group(2) or "").strip()
+
+            if (is_relevant or is_hot or is_urgent) and (is_purchasable or is_urgent):
+                deal_flair = flair
+                if promo_code:
+                    deal_flair = f"CODE: {promo_code}" + (f" | {flair}" if flair else "")
+                if is_urgent and not deal_flair:
+                    low_combined = combined.lower()
+                    for kw in _URGENT_KEYWORDS:
+                        if kw in low_combined:
+                            deal_flair = kw.upper()
+                            break
+
                 deals.append(Deal(
                     source=f"r/{sub}",
                     title=title,
@@ -272,7 +308,7 @@ def _fetch_single_reddit(sub: str, opts: dict) -> list[Deal]:
                     image=_extract_reddit_image(post),
                     upvotes=upvotes,
                     comments=post.get("num_comments", 0),
-                    flair=flair,
+                    flair=deal_flair,
                 ))
     except Exception:
         log.exception("Reddit error for r/%s", sub)
@@ -309,6 +345,22 @@ def _fetch_all_reddit() -> list[Deal]:
         time.sleep(config.REQUEST_DELAY)
     return deals
 
+
+# Coupon / promo code extraction from text
+_PROMO_RE = re.compile(
+    r"(?:code|coupon|promo|discount code|use)[:\s]+[\"']?([A-Z0-9]{3,20})[\"']?"
+    r"|([A-Z0-9]{4,15})\s+(?:for|gets?\s+you|gives?|=)\s+\d+%",
+    re.IGNORECASE,
+)
+
+# "Price error" and "just went live" signals — these posts are TIME-SENSITIVE
+_URGENT_KEYWORDS = [
+    "price error", "pricing error", "pricing mistake", "price mistake",
+    "price glitch", "glitch", "just went live", "just dropped",
+    "live now", "goes live", "gone live", "hurry", "going fast",
+    "selling fast", "almost gone", "act fast", "won't last",
+    "stack", "stackable", "stacks with", "extra off", "additional",
+]
 
 _NORM_RE = re.compile(r"[^a-z0-9 ]")
 

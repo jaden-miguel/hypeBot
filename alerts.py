@@ -83,6 +83,7 @@ def _format_message(deal: dict, analysis: dict | None,
     roi_pct         = 0
     platforms       = []
     urgency         = {}
+    price_error     = None
 
     if flip:
         flip_score      = flip.get("flip_score", 0)
@@ -95,6 +96,7 @@ def _format_message(deal: dict, analysis: dict | None,
         roi_pct         = flip.get("roi_pct", 0)
         platforms       = flip.get("platforms", [])
         urgency         = flip.get("urgency", {})
+        price_error     = flip.get("price_error")
 
     is_lowest  = False
     is_restock = False
@@ -130,6 +132,8 @@ def _format_message(deal: dict, analysis: dict | None,
         "roi_pct":        roi_pct,
         "platforms":      platforms,
         "urgency":        urgency,
+        "price_error":    price_error,
+        "cheapest_of":    deal.get("_cheapest_of"),
         "is_lowest":      is_lowest,
         "is_restock":     is_restock,
         "price_drop":     price_drop,
@@ -184,10 +188,20 @@ def _build_telegram_html(msg: dict) -> str:
     urgency   = msg.get("urgency", {})
     is_flip   = flip_v in _FLIP_BADGE and profit_lo > 0
 
+    pe        = msg.get("price_error")
+    cheapest  = msg.get("cheapest_of")
+
     lines = []
 
+    # ── PRICE ERROR BANNER (highest priority) ──
+    if pe:
+        lines.append(f"🚨🚨  <b>POSSIBLE PRICE ERROR</b>  🚨🚨")
+        lines.append(f"Listed at <b>${pe['paid']:.0f}</b> — retail is <b>${pe['expected_retail']:.0f}</b> ({pe['savings_pct']}% off)")
+        lines.append("<b>BUY IMMEDIATELY before they fix it!</b>")
+        lines.append("")
+
     # ── URGENCY BANNER ──
-    if urgency and urgency.get("level") in ("critical", "high"):
+    elif urgency and urgency.get("level") in ("critical", "high"):
         u_emoji = _URGENCY_EMOJI.get(urgency["level"], "")
         lines.append(f'{u_emoji} <b>{urgency.get("label", "")}</b> — {e(urgency.get("reason", ""))}')
         lines.append("")
@@ -200,13 +214,27 @@ def _build_telegram_html(msg: dict) -> str:
         lines.append(f"📉  <b>LOWEST PRICE — ${msg['price_drop']:.0f} below previous low</b>")
         lines.append("")
 
+    # ── CHEAPEST SOURCE banner ──
+    if cheapest and cheapest.get("savings", 0) >= 5:
+        other_prices = ", ".join(
+            f"${p:.0f} ({s})" for p, s in cheapest.get("all_sources", [])[1:]
+        )
+        lines.append(f"🏆  <b>CHEAPEST SOURCE</b> — ${cheapest['savings']:.0f} less than {other_prices}")
+        lines.append("")
+
     # ── TITLE ──
     if msg["url"]:
         lines.append(f'<b><a href="{e(msg["url"])}">{e(msg["title"])}</a></b>')
     else:
         lines.append(f"<b>{e(msg['title'])}</b>")
-    if msg["flair"]:
-        lines.append(f'<i>{e(msg["flair"])}</i>')
+    flair_text = msg.get("flair", "")
+    if flair_text:
+        if flair_text.upper().startswith("CODE:"):
+            lines.append(f"🎟  <b>{e(flair_text)}</b>")
+        elif flair_text.upper() == "LOW STOCK":
+            lines.append("⚠️  <b>LOW STOCK — limited sizes remaining</b>")
+        else:
+            lines.append(f'<i>{e(flair_text)}</i>')
     lines.append("")
 
     # ── ACTION PLAN (the money part) ──
@@ -469,18 +497,30 @@ def _log_to_console(msg: dict):
     resale_hi = msg.get("est_resale_high", 0)
     platforms = msg.get("platforms", [])
     urgency   = msg.get("urgency", {})
+    pe        = msg.get("price_error")
+    cheapest  = msg.get("cheapest_of")
     is_flip   = flip_v in _FLIP_BADGE and profit_lo > 0
 
     sep = "─" * 62
     print(f"\n{sep}")
 
-    if urgency and urgency.get("level") in ("critical", "high"):
+    if pe:
+        print(f"  🚨🚨 POSSIBLE PRICE ERROR — ${pe['paid']:.0f} vs retail ${pe['expected_retail']:.0f} ({pe['savings_pct']}% off)")
+    elif urgency and urgency.get("level") in ("critical", "high"):
         print(f"  {_URGENCY_EMOJI.get(urgency['level'], '')} {urgency.get('label', '')} — {urgency.get('reason', '')}")
 
     if msg.get("is_restock"):
         print("  🔄  RESTOCK — was sold out, back in stock!")
     if msg.get("is_lowest") and msg.get("price_drop", 0) > 0:
         print(f"  📉  LOWEST PRICE — ${msg['price_drop']:.0f} below previous low")
+    if cheapest and cheapest.get("savings", 0) >= 5:
+        print(f"  🏆  CHEAPEST SOURCE — ${cheapest['savings']:.0f} less than other stores")
+
+    flair_text = msg.get("flair", "")
+    if flair_text and flair_text.upper().startswith("CODE:"):
+        print(f"  🎟  {flair_text}")
+    if flair_text and flair_text.upper() == "LOW STOCK":
+        print(f"  ⚠️  LOW STOCK — limited sizes remaining")
 
     print(f"  {msg['title']}")
 
@@ -527,52 +567,60 @@ def _log_to_console(msg: dict):
 # ===========================================================================
 
 _PLAYBOOK_HTML = """
-💵  <b>HYPEBOT MONEY PLAYBOOK</b>
+💵  <b>HYPEBOT v6 — MONEY PLAYBOOK</b>
 
-Your bot is now running 24/7 scanning for profit opportunities.
-Here's how to use each alert type to make money:
+Your bot is scanning 24/7 with edge-finding tech.
+Here's how to use each alert to make money:
 
-━━━ <b>HOW IT WORKS</b> ━━━
+━━━ <b>ALERT PRIORITY</b> ━━━
 
-1️⃣  <b>FLIP ALERTS (💰🔥)</b>
-Bot finds items selling below resale value.
-You'll see a 3-step action plan:
-  BUY → SELL → PROFIT
+🚨🚨 <b>PRICE ERRORS</b> — #1 money maker
+Store listed item way below retail.
+BUY INSTANTLY — they fix these in minutes.
 
-2️⃣  <b>RESTOCK ALERTS (🔄)</b>
-Previously sold-out items are back in stock.
-These sell fast — act immediately.
+💰🔥 <b>STRONG FLIP</b> — 3-step action plan
+BUY → SELL → PROFIT with ROI shown.
 
-3️⃣  <b>LOWEST PRICE (📉)</b>
-Item hit its cheapest price ever.
-Great time to buy for personal use or resale.
+🔄 <b>RESTOCK</b> — sold out, now back
+Previously gone items return. Act fast.
 
-4️⃣  <b>DROP ALERTS (🚨📅)</b>
-Upcoming hyped releases with flip potential.
-Buy on release day, sell for markup.
+📉 <b>LOWEST PRICE</b> — cheapest ever seen
+Bot tracks prices across cycles.
+
+🏆 <b>CHEAPEST SOURCE</b> — multi-store scan
+Same item, found cheaper than other stores.
+
+🎟 <b>PROMO CODES</b> — auto-detected
+Stackable coupons from Reddit. Extra margin.
+
+⚠️ <b>LOW STOCK</b> — about to sell out
+Limited sizes remaining.
 
 ━━━ <b>WHERE TO SELL</b> ━━━
 
-👟  <b>StockX</b> — Best for sneakers (10% fee)
-     stockx.com — instant price lookup
+👟 StockX — sneakers (10% fee)
+👟 GOAT — sneakers, new + used (10%)
+👕 Grailed — designer streetwear (9%)
+🛒 eBay — everything, biggest pool (13%)
 
-👟  <b>GOAT</b> — Sneakers, new + used (10% fee)
-     goat.com — good for worn pairs
+━━━ <b>SMART TIMING</b> ━━━
 
-👕  <b>Grailed</b> — Streetwear clothing (9% fee)
-     grailed.com — designer & hype brands
+Bot runs rapid scans (every 15 min) during:
+• 10am EST — Nike / most US drops
+• Midnight EST — SNKRS surprise drops
+• Early AM — EU restocks hit US
 
-🛒  <b>eBay</b> — Everything (13% fee)
-     ebay.com — biggest buyer pool
+Normal: every 3 hours.
 
 ━━━ <b>QUICK START</b> ━━━
 
-• Create accounts on StockX + GOAT + eBay now
-• When you see 💰🔥 STRONG FLIP — buy immediately
-• List on the recommended platform within 24hrs
-• Track your profit in a simple spreadsheet
+1. Create accounts: StockX + GOAT + eBay
+2. 🚨 Price Error → buy IMMEDIATELY
+3. 💰🔥 Strong Flip → follow action plan
+4. List within 24hrs on recommended platform
+5. Track profit in a spreadsheet
 
-<i>Bot scans every 3 hours. Best deals go fast!</i>
+<i>Scanning {sources} sources now!</i>
 """.strip()
 
 
@@ -580,6 +628,10 @@ def send_playbook():
     """Send the one-time money playbook via Telegram on startup."""
     if not (config.TELEGRAM_BOT_TOKEN and config.TELEGRAM_CHAT_ID):
         return
+
+    total_sources = (len(config.RSS_FEEDS) + len(config.SCRAPE_TARGETS)
+                     + len(config.REDDIT_SUBREDDITS))
+    text = _PLAYBOOK_HTML.replace("{sources}", str(total_sources))
 
     _tg_throttle()
 
@@ -589,7 +641,7 @@ def send_playbook():
             f"{base}/sendMessage",
             json={
                 "chat_id":                  config.TELEGRAM_CHAT_ID,
-                "text":                     _PLAYBOOK_HTML,
+                "text":                     text,
                 "parse_mode":               "HTML",
                 "disable_web_page_preview": True,
             },

@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
-HypeBot v4 — 24/7 streetwear deals, drops & flip monitor.
-Quality-scored alerts with resale profit estimation, price history,
-restock detection, daily digest. Capped per cycle, graceful shutdown.
+HypeBot v6 — 24/7 streetwear scalping machine.
+Price error detection, smart timing, coupon stacking, low-stock urgency,
+multi-store comparison, hidden clearance scraping. Finds deals before anyone.
 """
 
 import gc
@@ -11,7 +11,7 @@ import logging.handlers
 import signal
 import sys
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 
 import config
 import database
@@ -26,6 +26,16 @@ _shutdown = False
 MAX_ALERTS_PER_CYCLE = 15
 MIN_DEAL_DISCOUNT = 20
 MIN_HYPE_TO_ALERT = 5
+
+# Peak drop hours (EST / UTC-5). Bot runs a quick extra scan during these.
+_DROP_HOURS_UTC = [
+    5,   # midnight EST — SNKRS surprise drops
+    10,  # 5am EST — EU drops hit, early restocks
+    14,  # 9am EST — brand sites update inventory
+    15,  # 10am EST — Nike, most US drops go live
+    16,  # 11am EST — secondary wave, Kith/Bodega/Concepts
+]
+_RAPID_SCAN_INTERVAL = 900  # 15 min between rapid scans during drop hours
 
 
 def _handle_signal(signum, frame):
@@ -58,10 +68,52 @@ def _extract_price(text: str) -> float:
     return float(m.group(1).replace(",", "")) if m else 0.0
 
 
+def _is_drop_hour() -> bool:
+    """Check if the current hour is a known peak drop window."""
+    return datetime.now(timezone.utc).hour in _DROP_HOURS_UTC
+
+
+def _find_cheapest_source(deals: list[dict]) -> dict[str, dict]:
+    """Compare the same item across multiple stores.
+    Returns a map of normalized title → {cheapest_price, cheapest_source, all_sources, savings}.
+    """
+    from scraper import _normalize_title
+    price_map: dict[str, list[tuple[float, str, dict]]] = {}
+
+    for deal in deals:
+        title = _normalize_title(deal.get("title", ""))
+        if not title or len(title) < 6:
+            continue
+        price = _extract_price(deal.get("price", ""))
+        if price <= 0:
+            continue
+        if title not in price_map:
+            price_map[title] = []
+        price_map[title].append((price, deal.get("source", ""), deal))
+
+    result = {}
+    for title, entries in price_map.items():
+        if len(entries) < 2:
+            continue
+        entries.sort(key=lambda x: x[0])
+        cheapest_price, cheapest_source, cheapest_deal = entries[0]
+        highest_price = entries[-1][0]
+        if highest_price > cheapest_price:
+            savings = round(highest_price - cheapest_price, 2)
+            result[title] = {
+                "cheapest_price": cheapest_price,
+                "cheapest_source": cheapest_source,
+                "all_sources": [(p, s) for p, s, _ in entries],
+                "savings": savings,
+                "deal": cheapest_deal,
+            }
+    return result
+
+
 def _quality_score(deal: dict, ai: dict | None, flip: dict | None = None,
                    price_intel: dict | None = None) -> float:
     """Compute a quality score to rank deals. Higher = better deal.
-    Flip potential + price intelligence are the heaviest weights."""
+    Price errors get maximum priority. Then flips, restocks, lowest prices."""
     score = 0.0
     disc = deal.get("discount_pct", 0) or 0
     score += disc * 2.0
@@ -71,14 +123,28 @@ def _quality_score(deal: dict, ai: dict | None, flip: dict | None = None,
         profit = flip.get("est_profit_low", 0)
         if profit > 0:
             score += min(profit, 200)
+        if flip.get("price_error"):
+            score += 500  # price errors go straight to the top
 
     if price_intel:
         if price_intel.get("is_lowest"):
-            score += 50                          # new lowest price = big signal
+            score += 50
         if price_intel.get("is_restock"):
-            score += 80                          # restocks are highly flippable
+            score += 80
         if price_intel.get("price_drop", 0) > 0:
             score += min(price_intel["price_drop"], 60)
+
+    # Multi-store cheapest bonus
+    if deal.get("_cheapest_of"):
+        savings = deal["_cheapest_of"].get("savings", 0)
+        score += min(savings, 80)
+
+    # Low stock urgency bonus
+    flair = deal.get("flair", "").lower()
+    if "low stock" in flair or "price error" in flair:
+        score += 100
+    if any(kw in flair for kw in ("just dropped", "live now", "hurry", "going fast")):
+        score += 60
 
     if ai:
         hype = ai.get("hype_score", 0)
@@ -139,6 +205,11 @@ def run_cycle():
     log.info("Loaded %d known deal IDs into memory", len(known_ids))
 
     raw_deals = scraper.fetch_all_deals()
+
+    # Multi-store price comparison — find cheapest source for same item
+    cheapest_map = _find_cheapest_source(raw_deals)
+    if cheapest_map:
+        log.info("Multi-store comparison: %d items found cheaper at alt stores", len(cheapest_map))
 
     ollama_ok = analyzer.health_check()
     if not ollama_ok:
@@ -226,11 +297,25 @@ def run_cycle():
 
         flip_est = resale.estimate_resale(deal)
 
-        # Quick-reject — but never reject strong flips, restocks, or lowest prices
+        # Tag price errors (auto-escalates urgency inside resale module)
+        if flip_est.get("price_error"):
+            pe = flip_est["price_error"]
+            log.warning("PRICE ERROR DETECTED: %s — $%.2f vs retail $%.0f (%d%% off)",
+                        deal.get("title", ""), pe["paid"], pe["expected_retail"], pe["savings_pct"])
+
+        # Tag multi-store cheapest
+        from scraper import _normalize_title as _norm
+        norm_title = _norm(deal.get("title", ""))
+        store_cmp = cheapest_map.get(norm_title)
+        if store_cmp and deal.get("source") == store_cmp["cheapest_source"]:
+            deal["_cheapest_of"] = store_cmp
+
+        # Quick-reject — but never reject strong flips, restocks, lowest prices, or price errors
         is_high_value = (
             flip_est.get("flip_score", 0) >= 50
             or (price_intel and price_intel.get("is_restock"))
             or (price_intel and price_intel.get("is_lowest") and buy_price > 0)
+            or flip_est.get("price_error")
         )
         if ai_result and not is_high_value:
             verdict = ai_result.get("verdict", "").lower()
@@ -325,16 +410,18 @@ def run_daily_digest(cycle_count: int):
 
 def main():
     log.info("=" * 60)
-    log.info("  HypeBot v5 — your 24/7 streetwear money machine")
+    log.info("  HypeBot v6 — streetwear scalping machine")
     log.info("  Ollama:   %s  |  Model: %s", config.OLLAMA_HOST, config.MODEL)
-    log.info("  Interval: %ds  |  Sources: %d RSS, %d web, %d Reddit",
-             config.SCRAPE_INTERVAL,
+    log.info("  Interval: %ds  |  Rapid scan: %ds (drop hours)",
+             config.SCRAPE_INTERVAL, _RAPID_SCAN_INTERVAL)
+    log.info("  Sources: %d RSS, %d web, %d Reddit",
              len(config.RSS_FEEDS),
              len(config.SCRAPE_TARGETS),
              len(config.REDDIT_SUBREDDITS))
     log.info("  Max alerts/cycle: %d  |  Min discount: %d%%",
              MAX_ALERTS_PER_CYCLE, MIN_DEAL_DISCOUNT)
-    log.info("  Features: action plans, platform recs, ROI, urgency")
+    log.info("  Edge: price errors, hidden clearance, smart timing,")
+    log.info("        promo codes, low stock, multi-store comparison")
     log.info("=" * 60)
 
     database.init_db()
@@ -380,8 +467,15 @@ def main():
         if _shutdown:
             break
 
-        log.info("Sleeping %ds until next cycle...", config.SCRAPE_INTERVAL)
-        for _ in range(config.SCRAPE_INTERVAL):
+        # Smart timing: during peak drop hours, scan every 15 min instead of 3 hours
+        if _is_drop_hour():
+            sleep_time = _RAPID_SCAN_INTERVAL
+            log.info("DROP HOUR detected — rapid scan mode, next scan in %ds", sleep_time)
+        else:
+            sleep_time = config.SCRAPE_INTERVAL
+
+        log.info("Sleeping %ds until next cycle...", sleep_time)
+        for _ in range(sleep_time):
             if _shutdown:
                 break
             time.sleep(1)
