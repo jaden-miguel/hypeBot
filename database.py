@@ -114,6 +114,27 @@ def init_db():
             )
         """)
 
+        # ── Cycle analytics ───────────────────────────────────────
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS cycle_stats (
+                id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                cycle_at        TEXT NOT NULL,
+                duration_s      REAL DEFAULT 0,
+                deals_scanned   INTEGER DEFAULT 0,
+                deals_new       INTEGER DEFAULT 0,
+                alerts_sent     INTEGER DEFAULT 0,
+                flips_found     INTEGER DEFAULT 0,
+                restocks_found  INTEGER DEFAULT 0,
+                lowest_prices   INTEGER DEFAULT 0,
+                total_est_profit REAL DEFAULT 0,
+                top_source      TEXT DEFAULT '',
+                is_rapid        INTEGER DEFAULT 0
+            )
+        """)
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_cs_at ON cycle_stats(cycle_at)"
+        )
+
 
 def deal_hash(source: str, title: str, url: str = "") -> str:
     raw = f"{source}|{title}|{url}".lower().strip()
@@ -398,4 +419,141 @@ def prune_item_tracker(days: int = 30):
     with _connect() as conn:
         return conn.execute(
             "DELETE FROM item_tracker WHERE last_seen < ?", (cutoff,)
+        ).rowcount
+
+
+# ---------------------------------------------------------------------------
+# Analytics
+# ---------------------------------------------------------------------------
+
+def record_cycle_stats(stats: dict):
+    """Save one row of cycle-level analytics."""
+    now = datetime.now(timezone.utc).isoformat()
+    with _connect() as conn:
+        conn.execute(
+            """INSERT INTO cycle_stats
+               (cycle_at, duration_s, deals_scanned, deals_new, alerts_sent,
+                flips_found, restocks_found, lowest_prices, total_est_profit,
+                top_source, is_rapid)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                now,
+                stats.get("duration_s", 0),
+                stats.get("deals_scanned", 0),
+                stats.get("deals_new", 0),
+                stats.get("alerts_sent", 0),
+                stats.get("flips_found", 0),
+                stats.get("restocks_found", 0),
+                stats.get("lowest_prices", 0),
+                stats.get("total_est_profit", 0),
+                stats.get("top_source", ""),
+                1 if stats.get("is_rapid") else 0,
+            ),
+        )
+
+
+def get_analytics(days: int = 7) -> dict:
+    """Aggregate analytics over the last N days from all tables."""
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+    conn = _connect()
+
+    # ── Cycle stats aggregates ──
+    cs = conn.execute(
+        """SELECT
+             COUNT(*)                   AS total_cycles,
+             COALESCE(SUM(deals_scanned), 0)   AS total_scanned,
+             COALESCE(SUM(deals_new), 0)        AS total_new,
+             COALESCE(SUM(alerts_sent), 0)      AS total_alerts,
+             COALESCE(SUM(flips_found), 0)      AS total_flips,
+             COALESCE(SUM(restocks_found), 0)   AS total_restocks,
+             COALESCE(SUM(lowest_prices), 0)    AS total_lowest,
+             COALESCE(SUM(total_est_profit), 0) AS sum_profit,
+             COALESCE(AVG(duration_s), 0)       AS avg_duration,
+             SUM(is_rapid)              AS rapid_cycles
+           FROM cycle_stats WHERE cycle_at >= ?""",
+        (cutoff,),
+    ).fetchone()
+
+    # ── Deals by source ──
+    source_rows = conn.execute(
+        """SELECT source, COUNT(*) AS cnt
+           FROM deals WHERE created_at >= ?
+           GROUP BY source ORDER BY cnt DESC LIMIT 10""",
+        (cutoff,),
+    ).fetchall()
+
+    # ── Alerted deals by source ──
+    alerted_rows = conn.execute(
+        """SELECT source, COUNT(*) AS cnt
+           FROM deals WHERE created_at >= ? AND is_alerted = 1
+           GROUP BY source ORDER BY cnt DESC LIMIT 5""",
+        (cutoff,),
+    ).fetchall()
+
+    # ── Price trends — avg price per day for the last N days ──
+    trend_rows = conn.execute(
+        """SELECT DATE(seen_at) AS day, AVG(price) AS avg_price, COUNT(*) AS cnt
+           FROM price_history WHERE seen_at >= ?
+           GROUP BY DATE(seen_at) ORDER BY day""",
+        (cutoff,),
+    ).fetchall()
+
+    # ── Most tracked items ──
+    top_items = conn.execute(
+        """SELECT title, times_seen, last_price, source
+           FROM item_tracker ORDER BY times_seen DESC LIMIT 5"""
+    ).fetchall()
+
+    # ── Restocked items in period ──
+    restocked = conn.execute(
+        """SELECT title, source, last_price
+           FROM item_tracker WHERE was_gone = 0 AND times_seen > 1
+           ORDER BY times_seen DESC LIMIT 5"""
+    ).fetchall()
+
+    # ── Total unique items tracked ──
+    unique_items = conn.execute(
+        "SELECT COUNT(*) FROM item_tracker"
+    ).fetchone()[0]
+
+    # ── Total price snapshots ──
+    total_snapshots = conn.execute(
+        "SELECT COUNT(*) FROM price_history WHERE seen_at >= ?", (cutoff,)
+    ).fetchone()[0]
+
+    # ── Upcoming drops ──
+    now_iso = datetime.now(timezone.utc).isoformat()
+    upcoming_drops = conn.execute(
+        "SELECT COUNT(*) FROM drops WHERE release_dt >= ?", (now_iso,)
+    ).fetchone()[0]
+
+    return {
+        "days": days,
+        "total_cycles": cs["total_cycles"] if cs else 0,
+        "total_scanned": cs["total_scanned"] if cs else 0,
+        "total_new": cs["total_new"] if cs else 0,
+        "total_alerts": cs["total_alerts"] if cs else 0,
+        "total_flips": cs["total_flips"] if cs else 0,
+        "total_restocks": cs["total_restocks"] if cs else 0,
+        "total_lowest": cs["total_lowest"] if cs else 0,
+        "sum_profit": cs["sum_profit"] if cs else 0,
+        "avg_duration": cs["avg_duration"] if cs else 0,
+        "rapid_cycles": cs["rapid_cycles"] if cs else 0,
+        "sources": [(r["source"], r["cnt"]) for r in source_rows],
+        "alerted_sources": [(r["source"], r["cnt"]) for r in alerted_rows],
+        "price_trend": [(r["day"], r["avg_price"], r["cnt"]) for r in trend_rows],
+        "top_items": [dict(r) for r in top_items],
+        "restocked": [dict(r) for r in restocked],
+        "unique_items": unique_items,
+        "total_snapshots": total_snapshots,
+        "upcoming_drops": upcoming_drops,
+    }
+
+
+def prune_cycle_stats(days: int = 90):
+    """Keep cycle stats for the last N days."""
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+    with _connect() as conn:
+        return conn.execute(
+            "DELETE FROM cycle_stats WHERE cycle_at < ?", (cutoff,)
         ).rowcount

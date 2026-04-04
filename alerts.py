@@ -901,3 +901,192 @@ def send_daily_digest(deals: list[dict]):
             log.error("Daily digest error %s: %s", resp.status_code, resp.text[:200])
     except Exception:
         log.exception("Daily digest failed")
+
+
+# ===========================================================================
+# ANALYTICS REPORT
+# ===========================================================================
+
+def _trend_arrow(trend: list[tuple]) -> str:
+    """Show price trend direction from daily averages."""
+    if len(trend) < 2:
+        return "—"
+    first_avg = trend[0][1]
+    last_avg = trend[-1][1]
+    if first_avg <= 0:
+        return "—"
+    change_pct = ((last_avg - first_avg) / first_avg) * 100
+    if change_pct < -3:
+        return f"📉 {change_pct:+.1f}%"
+    elif change_pct > 3:
+        return f"📈 {change_pct:+.1f}%"
+    return f"➡️ {change_pct:+.1f}%"
+
+
+def _bar_chart(items: list[tuple], max_bars: int = 8) -> list[str]:
+    """Build a simple text-based horizontal bar chart."""
+    if not items:
+        return ["  (no data)"]
+    top = items[:max_bars]
+    max_val = max(v for _, v in top) if top else 1
+    lines = []
+    for label, val in top:
+        bar_len = max(1, int((val / max_val) * 10))
+        bar = "█" * bar_len
+        lines.append(f"  {bar} <b>{val}</b> — {_h(label)}")
+    return lines
+
+
+def send_analytics_report(data: dict):
+    """Send a rich analytics report via Telegram."""
+    if not (config.TELEGRAM_BOT_TOKEN and config.TELEGRAM_CHAT_ID):
+        return
+
+    e = _h
+    days = data.get("days", 7)
+
+    lines = [
+        f"📊  <b>ANALYTICS — Last {days} Days</b>",
+        "",
+    ]
+
+    # ── Overview stats ──
+    lines.append("━━━ <b>OVERVIEW</b> ━━━")
+    lines.append("")
+    lines.append(f"🔄  Scan cycles: <b>{data.get('total_cycles', 0)}</b>"
+                 f"  ({data.get('rapid_cycles', 0)} rapid)")
+    lines.append(f"📦  Deals scanned: <b>{data.get('total_scanned', 0):,}</b>")
+    lines.append(f"🆕  New deals found: <b>{data.get('total_new', 0):,}</b>")
+    lines.append(f"🔔  Alerts sent: <b>{data.get('total_alerts', 0)}</b>")
+    lines.append(f"⏱  Avg cycle time: <b>{data.get('avg_duration', 0):.0f}s</b>")
+    lines.append("")
+
+    # ── Money stats ──
+    lines.append("━━━ 💰 <b>MONEY</b> ━━━")
+    lines.append("")
+    total_profit = data.get("sum_profit", 0)
+    lines.append(f"💰  Total est. profit found: <b>${total_profit:,.0f}</b>")
+    lines.append(f"💰🔥  Flip opportunities: <b>{data.get('total_flips', 0)}</b>")
+    lines.append(f"🔄  Restocks caught: <b>{data.get('total_restocks', 0)}</b>")
+    lines.append(f"📉  Lowest prices found: <b>{data.get('total_lowest', 0)}</b>")
+    lines.append("")
+
+    # ── Top sources ──
+    sources = data.get("sources", [])
+    if sources:
+        lines.append("━━━ 📡 <b>TOP SOURCES</b> ━━━")
+        lines.append("")
+        lines.extend(_bar_chart(sources, 6))
+        lines.append("")
+
+    # ── Top alerted sources ──
+    alerted = data.get("alerted_sources", [])
+    if alerted:
+        lines.append("━━━ 🔔 <b>BEST ALERT SOURCES</b> ━━━")
+        lines.append("")
+        lines.extend(_bar_chart(alerted, 5))
+        lines.append("")
+
+    # ── Price trend ──
+    trend = data.get("price_trend", [])
+    if trend:
+        arrow = _trend_arrow(trend)
+        lines.append("━━━ 📈 <b>PRICE TREND</b> ━━━")
+        lines.append("")
+        lines.append(f"  Direction: {arrow}")
+        lines.append(f"  Snapshots tracked: <b>{data.get('total_snapshots', 0):,}</b>")
+        lines.append(f"  Unique items: <b>{data.get('unique_items', 0):,}</b>")
+        if len(trend) >= 2:
+            lines.append(f"  Avg {trend[0][0]}: ${trend[0][1]:.0f}")
+            lines.append(f"  Avg {trend[-1][0]}: ${trend[-1][1]:.0f}")
+        lines.append("")
+
+    # ── Most tracked items ──
+    top_items = data.get("top_items", [])
+    if top_items:
+        lines.append("━━━ 👁 <b>MOST TRACKED</b> ━━━")
+        lines.append("")
+        for i, item in enumerate(top_items[:5], 1):
+            title = item.get("title", "")[:40]
+            seen = item.get("times_seen", 0)
+            price = item.get("last_price", 0)
+            lines.append(f"  {i}. {e(title)}")
+            lines.append(f"     Seen {seen}x  •  Last ${price:.0f}")
+        lines.append("")
+
+    # ── Upcoming drops ──
+    upcoming = data.get("upcoming_drops", 0)
+    if upcoming:
+        lines.append(f"📅  Upcoming drops tracked: <b>{upcoming}</b>")
+        lines.append("")
+
+    lines.append(f"<i>Report generated {e(data.get('generated', ''))}</i>")
+
+    caption = "\n".join(lines)
+    if len(caption) > 4090:
+        caption = caption[:4087] + "..."
+
+    _tg_throttle()
+
+    base = f"https://api.telegram.org/bot{config.TELEGRAM_BOT_TOKEN}"
+    try:
+        resp = requests.post(
+            f"{base}/sendMessage",
+            json={
+                "chat_id":                  config.TELEGRAM_CHAT_ID,
+                "text":                     caption,
+                "parse_mode":               "HTML",
+                "disable_web_page_preview": True,
+            },
+            timeout=10,
+        )
+        if resp.ok:
+            log.info("Analytics report sent")
+        else:
+            log.error("Analytics report error %s: %s", resp.status_code, resp.text[:200])
+    except Exception:
+        log.exception("Analytics report failed")
+
+
+def send_cycle_summary(stats: dict):
+    """Send a compact one-line cycle summary to Telegram after each scan."""
+    if not (config.TELEGRAM_BOT_TOKEN and config.TELEGRAM_CHAT_ID):
+        return
+
+    parts = [f"🔄 Cycle #{stats.get('cycle_num', '?')}"]
+    parts.append(f"{stats.get('deals_new', 0)} new")
+    parts.append(f"{stats.get('alerts_sent', 0)} alerts")
+
+    flips = stats.get("flips_found", 0)
+    if flips:
+        parts.append(f"💰 {flips} flips")
+
+    profit = stats.get("total_est_profit", 0)
+    if profit > 0:
+        parts.append(f"${profit:.0f} potential")
+
+    restocks = stats.get("restocks_found", 0)
+    if restocks:
+        parts.append(f"🔄 {restocks} restocks")
+
+    duration = stats.get("duration_s", 0)
+    parts.append(f"⏱ {duration:.0f}s")
+
+    text = "  •  ".join(parts)
+
+    _tg_throttle()
+
+    base = f"https://api.telegram.org/bot{config.TELEGRAM_BOT_TOKEN}"
+    try:
+        requests.post(
+            f"{base}/sendMessage",
+            json={
+                "chat_id":    config.TELEGRAM_CHAT_ID,
+                "text":       text,
+                "parse_mode": "HTML",
+                "disable_web_page_preview": True,
+            },
+            timeout=10,
+        )
+    except Exception:
+        log.exception("Cycle summary send failed")

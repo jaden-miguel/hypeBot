@@ -206,7 +206,6 @@ def run_cycle():
 
     raw_deals = scraper.fetch_all_deals()
 
-    # Multi-store price comparison — find cheapest source for same item
     cheapest_map = _find_cheapest_source(raw_deals)
     if cheapest_map:
         log.info("Multi-store comparison: %d items found cheaper at alt stores", len(cheapest_map))
@@ -218,6 +217,13 @@ def run_cycle():
     candidates: list[tuple[dict, dict | None, dict | None, dict | None, float]] = []
     new_count = 0
     current_titles: set[str] = set()
+
+    # Analytics counters
+    _cy_flips = 0
+    _cy_restocks = 0
+    _cy_lowest = 0
+    _cy_profit = 0.0
+    _cy_source_counts: dict[str, int] = {}
 
     for deal in raw_deals:
         if _shutdown:
@@ -297,7 +303,18 @@ def run_cycle():
 
         flip_est = resale.estimate_resale(deal)
 
-        # Tag price errors (auto-escalates urgency inside resale module)
+        # Track analytics
+        src = deal.get("source", "unknown")
+        _cy_source_counts[src] = _cy_source_counts.get(src, 0) + 1
+        if flip_est.get("flip_score", 0) >= 40:
+            _cy_flips += 1
+        if flip_est.get("est_profit_low", 0) > 0:
+            _cy_profit += flip_est["est_profit_low"]
+        if price_intel and price_intel.get("is_restock"):
+            _cy_restocks += 1
+        if price_intel and price_intel.get("is_lowest") and buy_price > 0:
+            _cy_lowest += 1
+
         if flip_est.get("price_error"):
             pe = flip_est["price_error"]
             log.warning("PRICE ERROR DETECTED: %s — $%.2f vs retail $%.0f (%d%% off)",
@@ -367,7 +384,21 @@ def run_cycle():
         "Cycle done in %.1fs — %d new, %d alerted, %d total in DB",
         elapsed, new_count, alert_count, len(known_ids),
     )
-    return alert_count
+
+    top_source = max(_cy_source_counts, key=_cy_source_counts.get) if _cy_source_counts else ""
+
+    return {
+        "duration_s": elapsed,
+        "deals_scanned": len(raw_deals),
+        "deals_new": new_count,
+        "alerts_sent": alert_count,
+        "flips_found": _cy_flips,
+        "restocks_found": _cy_restocks,
+        "lowest_prices": _cy_lowest,
+        "total_est_profit": _cy_profit,
+        "top_source": top_source,
+        "is_rapid": _is_drop_hour(),
+    }
 
 
 _digest_buffer: list[dict] = []
@@ -408,6 +439,17 @@ def run_daily_digest(cycle_count: int):
     _digest_buffer = []
 
 
+def run_analytics_report():
+    """Generate and send the full analytics report."""
+    try:
+        data = database.get_analytics(days=7)
+        data["generated"] = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+        alerts.send_analytics_report(data)
+        log.info("Analytics report sent (7-day)")
+    except Exception:
+        log.exception("Analytics report failed")
+
+
 def main():
     log.info("=" * 60)
     log.info("  HypeBot v6 — streetwear scalping machine")
@@ -422,6 +464,7 @@ def main():
              MAX_ALERTS_PER_CYCLE, MIN_DEAL_DISCOUNT)
     log.info("  Edge: price errors, hidden clearance, smart timing,")
     log.info("        promo codes, low stock, multi-store comparison")
+    log.info("  Analytics: cycle summaries, weekly reports, price trends")
     log.info("=" * 60)
 
     database.init_db()
@@ -432,27 +475,49 @@ def main():
     except Exception:
         log.exception("Playbook send failed — continuing")
 
+    # Send startup analytics if any history exists
+    try:
+        data = database.get_analytics(days=7)
+        if data.get("total_cycles", 0) > 0:
+            data["generated"] = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+            alerts.send_analytics_report(data)
+            log.info("Startup analytics report sent")
+    except Exception:
+        log.exception("Startup analytics failed — continuing")
+
     consecutive_errors = 0
     cycle_count = 0
 
     while not _shutdown:
         try:
             run_drop_check()
-            alert_count = run_cycle()
+            cycle_stats = run_cycle()
             consecutive_errors = 0
             cycle_count += 1
 
+            # Record analytics
+            cycle_stats["cycle_num"] = cycle_count
+            database.record_cycle_stats(cycle_stats)
+
+            # Send compact cycle summary to Telegram
+            alerts.send_cycle_summary(cycle_stats)
+
             run_daily_digest(cycle_count)
+
+            # Send full analytics report every 24 cycles (~3 days at 3hr intervals, or weekly)
+            if cycle_count % 24 == 0:
+                run_analytics_report()
 
             if cycle_count % 8 == 0:
                 pruned_deals = database.prune_old_deals(days=30)
                 pruned_drops = database.prune_old_drops(days=7)
                 pruned_ph = database.prune_price_history(days=30)
                 pruned_it = database.prune_item_tracker(days=30)
-                total_pruned = pruned_deals + pruned_drops + pruned_ph + pruned_it
+                pruned_cs = database.prune_cycle_stats(days=90)
+                total_pruned = pruned_deals + pruned_drops + pruned_ph + pruned_it + pruned_cs
                 if total_pruned:
-                    log.info("Pruned %d deals, %d drops, %d prices, %d tracker entries",
-                             pruned_deals, pruned_drops, pruned_ph, pruned_it)
+                    log.info("Pruned %d deals, %d drops, %d prices, %d tracker, %d stats",
+                             pruned_deals, pruned_drops, pruned_ph, pruned_it, pruned_cs)
                 gc.collect()
 
         except Exception:

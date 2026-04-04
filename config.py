@@ -205,8 +205,8 @@ SCRAPE_TARGETS = [
         "compare_sel": ".product-price.is--striked-out",
     },
     {
-        "name": "end_sale_footwear",
-        "url": "https://www.endclothing.com/us/sale/footwear",
+        "name": "end_sale_shoes",
+        "url": "https://www.endclothing.com/us/sale?categories%5B%5D=shoes",
         "selector": ".product-card",
         "title_sel": ".product-card__title",
         "price_sel": ".product-card__price",
