@@ -218,6 +218,11 @@ def estimate_resale(deal: dict) -> dict:
     else:
         verdict = "depreciates"
 
+    roi_pct = round((est_profit_low / buy_price) * 100) if buy_price and est_profit_low > 0 else 0
+
+    platforms = _recommend_platforms(combined, buy_price, model, brand)
+    urgency = _assess_urgency(combined, disc_pct, model, scarcity)
+
     return {
         "flip_score": flip_score,
         "est_resale_low": est_resale_low,
@@ -227,4 +232,92 @@ def estimate_resale(deal: dict) -> dict:
         "flip_verdict": verdict,
         "brand_tier": brand,
         "signals": signals,
+        "roi_pct": roi_pct,
+        "platforms": platforms,
+        "urgency": urgency,
     }
+
+
+# ---------------------------------------------------------------------------
+# Platform recommendations
+# ---------------------------------------------------------------------------
+
+_SNEAKER_PATTERNS = re.compile(
+    r"dunk|jordan|air max|air force|yeezy|foam runner|slide|990|550|2002r|"
+    r"gel-|samba|gazelle|forum|blazer|waffle|pegasus|vomero",
+    re.IGNORECASE,
+)
+
+
+def _recommend_platforms(text: str, price: float, model_heat: float,
+                         brand: str) -> list[dict]:
+    """Recommend the best resale platforms for this item type."""
+    platforms = []
+    is_sneaker = bool(_SNEAKER_PATTERNS.search(text))
+    low = text.lower()
+
+    if is_sneaker or model_heat > 0.3:
+        platforms.append({
+            "name": "StockX",
+            "why": "Largest sneaker market, instant price discovery",
+            "fee_pct": 10,
+            "best_for": "sneakers, hyped releases",
+        })
+        platforms.append({
+            "name": "GOAT",
+            "why": "Used + new options, good for worn pairs too",
+            "fee_pct": 10,
+            "best_for": "sneakers, rare finds",
+        })
+
+    if any(b in low for b in ("supreme", "palace", "kith", "bape", "gallery dept",
+                               "chrome hearts", "rick owens", "raf simons", "amiri")):
+        platforms.append({
+            "name": "Grailed",
+            "why": "Best for designer & streetwear apparel",
+            "fee_pct": 9,
+            "best_for": "clothing, accessories, designer",
+        })
+
+    platforms.append({
+        "name": "eBay",
+        "why": "Huge buyer pool, authenticity guarantee for $150+",
+        "fee_pct": 13,
+        "best_for": "everything, wider audience",
+    })
+
+    if not platforms or (is_sneaker and len(platforms) < 2):
+        platforms.insert(0, {
+            "name": "StockX",
+            "why": "Price transparency, fast sales",
+            "fee_pct": 10,
+            "best_for": "sneakers",
+        })
+
+    return platforms[:3]
+
+
+def _assess_urgency(text: str, disc_pct: int, model_heat: float,
+                    scarcity: float) -> dict:
+    """Assess how quickly the user should act."""
+    low = text.lower()
+
+    if any(kw in low for kw in ("restock", "just dropped", "limited", "qs",
+                                 "quickstrike", "sold out")):
+        return {"level": "critical", "label": "ACT NOW",
+                "reason": "Limited stock — will sell out fast"}
+
+    if scarcity > 0.3 or model_heat > 0.7:
+        return {"level": "high", "label": "MOVE FAST",
+                "reason": "High demand model — sizes disappear quickly"}
+
+    if disc_pct >= 40:
+        return {"level": "high", "label": "MOVE FAST",
+                "reason": f"{disc_pct}% off won't last — deep discounts get cleared"}
+
+    if disc_pct >= 25 and model_heat > 0.3:
+        return {"level": "medium", "label": "ACT TODAY",
+                "reason": "Good price on a popular model"}
+
+    return {"level": "low", "label": "BROWSE",
+            "reason": "Solid deal — take your time"}

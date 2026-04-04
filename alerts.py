@@ -80,6 +80,10 @@ def _format_message(deal: dict, analysis: dict | None,
     est_resale_high = 0.0
     flip_signals    = []
 
+    roi_pct         = 0
+    platforms       = []
+    urgency         = {}
+
     if flip:
         flip_score      = flip.get("flip_score", 0)
         flip_verdict    = flip.get("flip_verdict", "")
@@ -88,6 +92,9 @@ def _format_message(deal: dict, analysis: dict | None,
         est_resale_low  = flip.get("est_resale_low", 0)
         est_resale_high = flip.get("est_resale_high", 0)
         flip_signals    = flip.get("signals", [])
+        roi_pct         = flip.get("roi_pct", 0)
+        platforms       = flip.get("platforms", [])
+        urgency         = flip.get("urgency", {})
 
     is_lowest  = False
     is_restock = False
@@ -120,6 +127,9 @@ def _format_message(deal: dict, analysis: dict | None,
         "est_resale_low": est_resale_low,
         "est_resale_high": est_resale_high,
         "flip_signals":   flip_signals,
+        "roi_pct":        roi_pct,
+        "platforms":      platforms,
+        "urgency":        urgency,
         "is_lowest":      is_lowest,
         "is_restock":     is_restock,
         "price_drop":     price_drop,
@@ -151,85 +161,107 @@ _FLIP_BADGE = {
 }
 
 
+_URGENCY_EMOJI = {
+    "critical": "🔴",
+    "high":     "🟠",
+    "medium":   "🟡",
+    "low":      "🟢",
+}
+
+
 def _build_telegram_html(msg: dict) -> str:
     e = _h
 
-    verdict   = msg["verdict"]
-    v_emoji   = VERDICT_EMOJI.get(verdict, "💡")
-    v_label   = VERDICT_LABEL.get(verdict, verdict.title() if verdict else "")
-    src_emoji = SOURCE_EMOJI.get(msg["source"], "📡")
     disc      = msg.get("discount_pct", 0)
     flip_v    = msg.get("flip_verdict", "")
     flip_s    = msg.get("flip_score", 0)
+    roi       = msg.get("roi_pct", 0)
+    profit_lo = msg.get("est_profit_low", 0)
+    profit_hi = msg.get("est_profit_high", 0)
+    resale_lo = msg.get("est_resale_low", 0)
+    resale_hi = msg.get("est_resale_high", 0)
+    platforms = msg.get("platforms", [])
+    urgency   = msg.get("urgency", {})
+    is_flip   = flip_v in _FLIP_BADGE and profit_lo > 0
 
     lines = []
 
-    # ── Priority badges (most important signals first) ──
-    if msg.get("is_restock"):
-        lines.append("🔄  <b>RESTOCK ALERT — was sold out, back in stock!</b>")
-        lines.append("")
-    elif flip_v in _FLIP_BADGE:
-        f_emoji, f_label = _FLIP_BADGE[flip_v]
-        profit_low = msg.get("est_profit_low", 0)
-        profit_high = msg.get("est_profit_high", 0)
-        if profit_low > 0:
-            lines.append(f"{f_emoji}  <b>{f_label}  —  est. +${profit_low:.0f}–${profit_high:.0f} profit</b>")
-        else:
-            lines.append(f"{f_emoji}  <b>{f_label}</b>")
+    # ── URGENCY BANNER ──
+    if urgency and urgency.get("level") in ("critical", "high"):
+        u_emoji = _URGENCY_EMOJI.get(urgency["level"], "")
+        lines.append(f'{u_emoji} <b>{urgency.get("label", "")}</b> — {e(urgency.get("reason", ""))}')
         lines.append("")
 
+    # ── RESTOCK / LOWEST PRICE special banners ──
+    if msg.get("is_restock"):
+        lines.append("🔄  <b>RESTOCK — was sold out, back in stock!</b>")
+        lines.append("")
     if msg.get("is_lowest") and msg.get("price_drop", 0) > 0:
         lines.append(f"📉  <b>LOWEST PRICE — ${msg['price_drop']:.0f} below previous low</b>")
         lines.append("")
-    elif disc >= 15 and flip_v not in _FLIP_BADGE and not msg.get("is_restock"):
-        lines.append(f"🏷  <b>{disc}% OFF</b>")
-        lines.append("")
 
-    # ── Title ──
+    # ── TITLE ──
     if msg["url"]:
         lines.append(f'<b><a href="{e(msg["url"])}">{e(msg["title"])}</a></b>')
     else:
         lines.append(f"<b>{e(msg['title'])}</b>")
-
-    # ── Flair badge ──
     if msg["flair"]:
         lines.append(f'<i>{e(msg["flair"])}</i>')
-
     lines.append("")
 
-    # ── Price ──
-    if msg["price"]:
-        orig = msg.get("original_price", "")
-        if orig and disc:
-            lines.append(f"💰  <b>{e(msg['price'])}</b>  <s>{e(orig)}</s>  ({disc}% off)")
-        else:
-            lines.append(f"💰  <b>{e(msg['price'])}</b>")
+    # ── ACTION PLAN (the money part) ──
+    if is_flip:
+        lines.append("━━━ 💵 <b>ACTION PLAN</b> ━━━")
+        lines.append("")
 
-    # ── Resale estimate ──
-    resale_low = msg.get("est_resale_low", 0)
-    resale_high = msg.get("est_resale_high", 0)
-    if resale_low > 0 and flip_s >= 20:
-        lines.append(f"📊  Resale est: <b>${resale_low:.0f}–${resale_high:.0f}</b>")
+        # Step 1: BUY
+        if msg["price"]:
+            orig = msg.get("original_price", "")
+            source_name = msg.get("source", "").replace("_", " ").title()
+            if orig and disc:
+                lines.append(f"1️⃣  <b>BUY</b> at {e(source_name)} for <b>{e(msg['price'])}</b>  <s>{e(orig)}</s>  ({disc}% off)")
+            else:
+                lines.append(f"1️⃣  <b>BUY</b> at {e(source_name)} for <b>{e(msg['price'])}</b>")
 
-    # ── Source ──
-    lines.append(f"{src_emoji}  {e(msg['source'])}")
+        # Step 2: SELL
+        if platforms:
+            plat_names = " / ".join(p["name"] for p in platforms[:3])
+            lines.append(f"2️⃣  <b>SELL</b> on {e(plat_names)} for <b>${resale_lo:.0f}–${resale_hi:.0f}</b>")
 
-    # ── Reddit signals ──
+        # Step 3: PROFIT
+        lines.append(f"3️⃣  <b>PROFIT: +${profit_lo:.0f}–${profit_hi:.0f}</b>  ({roi}% ROI)")
+        lines.append("")
+
+        # Platform breakdown
+        if platforms:
+            lines.append("📱  <b>Where to sell:</b>")
+            for p in platforms[:3]:
+                lines.append(f"  • <b>{e(p['name'])}</b> ({p['fee_pct']}% fee) — {e(p['why'])}")
+            lines.append("")
+
+    else:
+        # Non-flip deal — still show price info
+        if msg["price"]:
+            orig = msg.get("original_price", "")
+            if orig and disc:
+                lines.append(f"💰  <b>{e(msg['price'])}</b>  <s>{e(orig)}</s>  ({disc}% off)")
+            else:
+                lines.append(f"💰  <b>{e(msg['price'])}</b>")
+        if resale_lo > 0 and flip_s >= 20:
+            lines.append(f"📊  Resale est: <b>${resale_lo:.0f}–${resale_hi:.0f}</b>")
+        lines.append("")
+
+    # ── Community / source signals ──
+    src_emoji = SOURCE_EMOJI.get(msg["source"], "📡")
     if msg["upvotes"] or msg["comments"]:
         lines.append(f"⬆️  {msg['upvotes']:,} upvotes   💬 {msg['comments']:,} comments")
-
-    # ── Trending badge ──
     if msg["trending"]:
         lines.append("🚀  <b>Trending Now</b>")
 
-    lines.append("")
-
-    # ── Analysis block ──
-    if verdict:
-        hype_bar = _hype_bar(msg["hype_score"])
-        lines.append(f"{v_emoji}  <b>{v_label}</b>   {hype_bar}")
-        if msg["ai_summary"]:
-            lines.append(f"<i>{e(msg['ai_summary'])}</i>")
+    # ── Hype bar ──
+    hype = msg.get("hype_score", 0)
+    if isinstance(hype, int) and hype > 0:
+        lines.append(f"🔥  {_hype_bar(hype)}")
 
     return "\n".join(lines)
 
@@ -296,30 +328,25 @@ def _send_telegram(msg: dict):
 # ---------------------------------------------------------------------------
 
 def _send_discord(msg: dict):
-    verdict  = msg["verdict"]
-    v_emoji  = VERDICT_EMOJI.get(verdict, "💡")
-    hype_bar = _hype_bar(msg["hype_score"])
-    disc     = msg.get("discount_pct", 0)
-    flip_v   = msg.get("flip_verdict", "")
-    flip_s   = msg.get("flip_score", 0)
+    disc      = msg.get("discount_pct", 0)
+    flip_v    = msg.get("flip_verdict", "")
+    flip_s    = msg.get("flip_score", 0)
+    profit_lo = msg.get("est_profit_low", 0)
+    profit_hi = msg.get("est_profit_high", 0)
+    resale_lo = msg.get("est_resale_low", 0)
+    resale_hi = msg.get("est_resale_high", 0)
+    roi       = msg.get("roi_pct", 0)
+    platforms = msg.get("platforms", [])
+    urgency   = msg.get("urgency", {})
+    is_flip   = flip_v in _FLIP_BADGE and profit_lo > 0
 
-    v_label  = VERDICT_LABEL.get(verdict, verdict.title() if verdict else "")
-
-    # Title prefix: flip alert takes priority over plain discount badge
-    if flip_v in _FLIP_BADGE:
-        f_emoji, f_label = _FLIP_BADGE[flip_v]
-        title_prefix = f"{f_emoji} {f_label} — "
+    if is_flip:
+        title_prefix = f"💰 +${profit_lo:.0f}–${profit_hi:.0f} PROFIT — "
     elif disc >= 15:
         title_prefix = f"🏷 {disc}% OFF — "
     else:
         title_prefix = ""
 
-    price_display = msg["price"] or "N/A"
-    orig = msg.get("original_price", "")
-    if orig and disc:
-        price_display = f"{msg['price']}  ~~{orig}~~  ({disc}% off)"
-
-    # Gold color for strong flips
     if flip_s >= 65:
         color = 0xFFD700
     elif flip_s >= 40:
@@ -327,50 +354,64 @@ def _send_discord(msg: dict):
     elif disc >= 30:
         color = 0xFF1744
     else:
+        verdict = msg["verdict"]
         color = VERDICT_COLOR.get(verdict, 0x7C4DFF)
+
+    description_parts = []
+    if urgency and urgency.get("level") in ("critical", "high"):
+        description_parts.append(f"**{urgency.get('label', '')}** — {urgency.get('reason', '')}")
+    if msg["ai_summary"]:
+        description_parts.append(msg["ai_summary"][:200])
 
     embed = {
         "title":       f"{title_prefix}{msg['title']}"[:256],
         "url":         msg["url"] or None,
         "color":       color,
-        "description": msg["ai_summary"][:300] if msg["ai_summary"] else None,
-        "fields":      [
-            {"name": "Source",  "value": msg["source"],  "inline": True},
-            {"name": "Price",   "value": price_display,  "inline": True},
-        ],
-        "footer": {"text": "HypeBot • Streetwear Intelligence"},
+        "description": "\n".join(description_parts) if description_parts else None,
+        "fields":      [],
+        "footer": {"text": "HypeBot • Streetwear Money Machine"},
     }
 
-    if flip_s >= 20:
-        profit_low = msg.get("est_profit_low", 0)
-        profit_high = msg.get("est_profit_high", 0)
-        resale_low = msg.get("est_resale_low", 0)
-        resale_high = msg.get("est_resale_high", 0)
-        flip_text = f"Resale est: ${resale_low:.0f}–${resale_high:.0f}"
-        if profit_low > 0:
-            flip_text += f"\nEst. profit: +${profit_low:.0f}–${profit_high:.0f}"
+    # Action plan fields
+    if is_flip:
+        source_name = msg.get("source", "").replace("_", " ").title()
+        price_display = msg["price"] or "N/A"
+        orig = msg.get("original_price", "")
+        if orig and disc:
+            price_display = f"{msg['price']}  ~~{orig}~~  ({disc}% off)"
+
         embed["fields"].append({
-            "name": "💰 Flip Potential",
-            "value": flip_text,
-            "inline": True,
+            "name": "1️⃣ BUY", "value": f"{price_display}\nat {source_name}", "inline": True,
         })
+        if platforms:
+            plat_list = "\n".join(f"• {p['name']} ({p['fee_pct']}% fee)" for p in platforms[:3])
+            embed["fields"].append({
+                "name": f"2️⃣ SELL (${resale_lo:.0f}–${resale_hi:.0f})",
+                "value": plat_list, "inline": True,
+            })
+        embed["fields"].append({
+            "name": "3️⃣ PROFIT",
+            "value": f"**+${profit_lo:.0f}–${profit_hi:.0f}**\n({roi}% ROI)", "inline": True,
+        })
+    else:
+        price_display = msg["price"] or "N/A"
+        orig = msg.get("original_price", "")
+        if orig and disc:
+            price_display = f"{msg['price']}  ~~{orig}~~  ({disc}% off)"
+        embed["fields"].append({"name": "Price", "value": price_display, "inline": True})
+        embed["fields"].append({"name": "Source", "value": msg["source"], "inline": True})
+        if resale_lo > 0 and flip_s >= 20:
+            embed["fields"].append({
+                "name": "📊 Resale Est.", "value": f"${resale_lo:.0f}–${resale_hi:.0f}", "inline": True,
+            })
 
     if msg["upvotes"] or msg["comments"]:
         embed["fields"].append({
-            "name":   "Community Signal",
-            "value":  f"⬆️ {msg['upvotes']:,} upvotes  💬 {msg['comments']:,} comments",
-            "inline": True,
-        })
-    if verdict:
-        embed["fields"].append({
-            "name":   "Analysis",
-            "value":  f"{v_emoji} {v_label}   {hype_bar}",
-            "inline": False,
+            "name": "Community",
+            "value": f"⬆️ {msg['upvotes']:,}  💬 {msg['comments']:,}", "inline": True,
         })
     if msg.get("image"):
         embed["image"] = {"url": msg["image"]}
-    if msg["trending"]:
-        embed["fields"].append({"name": "Market Signal", "value": "🚀 Trending", "inline": True})
 
     try:
         requests.post(
@@ -418,49 +459,148 @@ def _send_email(msg: dict):
 # ---------------------------------------------------------------------------
 
 def _log_to_console(msg: dict):
-    verdict  = msg["verdict"]
-    v_emoji  = VERDICT_EMOJI.get(verdict, "💡")
-    v_label  = VERDICT_LABEL.get(verdict, verdict.title() if verdict else "")
-    hype_bar = _hype_bar(msg["hype_score"])
-    disc     = msg.get("discount_pct", 0)
-    flip_v   = msg.get("flip_verdict", "")
-    flip_s   = msg.get("flip_score", 0)
+    disc      = msg.get("discount_pct", 0)
+    flip_v    = msg.get("flip_verdict", "")
+    flip_s    = msg.get("flip_score", 0)
+    roi       = msg.get("roi_pct", 0)
+    profit_lo = msg.get("est_profit_low", 0)
+    profit_hi = msg.get("est_profit_high", 0)
+    resale_lo = msg.get("est_resale_low", 0)
+    resale_hi = msg.get("est_resale_high", 0)
+    platforms = msg.get("platforms", [])
+    urgency   = msg.get("urgency", {})
+    is_flip   = flip_v in _FLIP_BADGE and profit_lo > 0
+
     sep = "─" * 62
     print(f"\n{sep}")
+
+    if urgency and urgency.get("level") in ("critical", "high"):
+        print(f"  {_URGENCY_EMOJI.get(urgency['level'], '')} {urgency.get('label', '')} — {urgency.get('reason', '')}")
+
     if msg.get("is_restock"):
-        print("  🔄  RESTOCK ALERT — was sold out, back in stock!")
-    elif flip_v in _FLIP_BADGE:
-        f_emoji, f_label = _FLIP_BADGE[flip_v]
-        profit_low = msg.get("est_profit_low", 0)
-        profit_high = msg.get("est_profit_high", 0)
-        if profit_low > 0:
-            print(f"  {f_emoji}  {f_label}  —  est. +${profit_low:.0f}–${profit_high:.0f} profit")
-        else:
-            print(f"  {f_emoji}  {f_label}")
-    elif disc >= 15:
-        print(f"  🏷  {disc}% OFF")
+        print("  🔄  RESTOCK — was sold out, back in stock!")
     if msg.get("is_lowest") and msg.get("price_drop", 0) > 0:
         print(f"  📉  LOWEST PRICE — ${msg['price_drop']:.0f} below previous low")
+
     print(f"  {msg['title']}")
-    if msg["price"]:
-        orig = msg.get("original_price", "")
-        if orig and disc:
-            print(f"  💰 {msg['price']}  (was {orig}, {disc}% off)")
-        else:
-            print(f"  💰 {msg['price']}")
-    if flip_s >= 20:
-        resale_low = msg.get("est_resale_low", 0)
-        resale_high = msg.get("est_resale_high", 0)
-        print(f"  📊 Resale est: ${resale_low:.0f}–${resale_high:.0f}")
+
+    if is_flip:
+        print(f"  ━━━ ACTION PLAN ━━━")
+        source_name = msg.get("source", "").replace("_", " ").title()
+        if msg["price"]:
+            orig = msg.get("original_price", "")
+            if orig and disc:
+                print(f"  1. BUY at {source_name} for {msg['price']}  (was {orig}, {disc}% off)")
+            else:
+                print(f"  1. BUY at {source_name} for {msg['price']}")
+        if platforms:
+            plat_names = " / ".join(p["name"] for p in platforms[:3])
+            print(f"  2. SELL on {plat_names} for ${resale_lo:.0f}–${resale_hi:.0f}")
+        print(f"  3. PROFIT: +${profit_lo:.0f}–${profit_hi:.0f}  ({roi}% ROI)")
+    else:
+        if msg["price"]:
+            orig = msg.get("original_price", "")
+            if orig and disc:
+                print(f"  💰 {msg['price']}  (was {orig}, {disc}% off)")
+            else:
+                print(f"  💰 {msg['price']}")
+        if resale_lo > 0 and flip_s >= 20:
+            print(f"  📊 Resale est: ${resale_lo:.0f}–${resale_hi:.0f}")
+
     print(f"  📡 {msg['source']}")
     if msg["upvotes"] or msg["comments"]:
         print(f"  ⬆️  {msg['upvotes']:,} upvotes   💬 {msg['comments']:,} comments")
-    if verdict:
-        print(f"  {v_emoji} {v_label}   {hype_bar}")
-    if msg["ai_summary"]:
-        print(f"  {msg['ai_summary'][:120]}")
+
+    hype = msg.get("hype_score", 0)
+    if isinstance(hype, int) and hype > 0:
+        verdict = msg["verdict"]
+        v_emoji = VERDICT_EMOJI.get(verdict, "💡")
+        v_label = VERDICT_LABEL.get(verdict, verdict.title() if verdict else "")
+        print(f"  {v_emoji} {v_label}   {_hype_bar(hype)}")
+
     print(f"  🔗 {msg['url']}")
     print(sep)
+
+
+# ===========================================================================
+# STARTUP PLAYBOOK — one-time guide sent when bot starts
+# ===========================================================================
+
+_PLAYBOOK_HTML = """
+💵  <b>HYPEBOT MONEY PLAYBOOK</b>
+
+Your bot is now running 24/7 scanning for profit opportunities.
+Here's how to use each alert type to make money:
+
+━━━ <b>HOW IT WORKS</b> ━━━
+
+1️⃣  <b>FLIP ALERTS (💰🔥)</b>
+Bot finds items selling below resale value.
+You'll see a 3-step action plan:
+  BUY → SELL → PROFIT
+
+2️⃣  <b>RESTOCK ALERTS (🔄)</b>
+Previously sold-out items are back in stock.
+These sell fast — act immediately.
+
+3️⃣  <b>LOWEST PRICE (📉)</b>
+Item hit its cheapest price ever.
+Great time to buy for personal use or resale.
+
+4️⃣  <b>DROP ALERTS (🚨📅)</b>
+Upcoming hyped releases with flip potential.
+Buy on release day, sell for markup.
+
+━━━ <b>WHERE TO SELL</b> ━━━
+
+👟  <b>StockX</b> — Best for sneakers (10% fee)
+     stockx.com — instant price lookup
+
+👟  <b>GOAT</b> — Sneakers, new + used (10% fee)
+     goat.com — good for worn pairs
+
+👕  <b>Grailed</b> — Streetwear clothing (9% fee)
+     grailed.com — designer & hype brands
+
+🛒  <b>eBay</b> — Everything (13% fee)
+     ebay.com — biggest buyer pool
+
+━━━ <b>QUICK START</b> ━━━
+
+• Create accounts on StockX + GOAT + eBay now
+• When you see 💰🔥 STRONG FLIP — buy immediately
+• List on the recommended platform within 24hrs
+• Track your profit in a simple spreadsheet
+
+<i>Bot scans every 3 hours. Best deals go fast!</i>
+""".strip()
+
+
+def send_playbook():
+    """Send the one-time money playbook via Telegram on startup."""
+    if not (config.TELEGRAM_BOT_TOKEN and config.TELEGRAM_CHAT_ID):
+        return
+
+    _tg_throttle()
+
+    base = f"https://api.telegram.org/bot{config.TELEGRAM_BOT_TOKEN}"
+    try:
+        resp = requests.post(
+            f"{base}/sendMessage",
+            json={
+                "chat_id":                  config.TELEGRAM_CHAT_ID,
+                "text":                     _PLAYBOOK_HTML,
+                "parse_mode":               "HTML",
+                "disable_web_page_preview": True,
+            },
+            timeout=10,
+        )
+        if resp.ok:
+            log.info("Playbook sent to Telegram")
+        else:
+            log.error("Playbook send error %s: %s", resp.status_code, resp.text[:200])
+    except Exception:
+        log.exception("Playbook send failed")
 
 
 # ===========================================================================
@@ -506,16 +646,29 @@ def _send_drop_telegram(drop: dict, tier: str, flip: dict | None = None):
     if drop.get("price"):
         lines.append(f"💰  <b>{e(drop['price'])}</b>")
 
-    # Flip potential for the drop
     if flip and flip.get("flip_score", 0) >= 30:
-        fv = flip.get("flip_verdict", "")
         profit_lo = flip.get("est_profit_low", 0)
         profit_hi = flip.get("est_profit_high", 0)
-        if profit_lo > 0:
-            lines.append(f"💰  Flip potential: <b>+${profit_lo:.0f}–${profit_hi:.0f}</b> ({fv})")
-        else:
-            lines.append(f"💰  Flip potential: <b>{fv}</b>")
+        roi = flip.get("roi_pct", 0)
+        resale_lo = flip.get("est_resale_low", 0)
+        resale_hi = flip.get("est_resale_high", 0)
+        plats = flip.get("platforms", [])
 
+        if profit_lo > 0:
+            lines.append("")
+            lines.append("━━━ 💵 <b>FLIP PLAN</b> ━━━")
+            lines.append(f"📈  Resale est: <b>${resale_lo:.0f}–${resale_hi:.0f}</b>")
+            lines.append(f"💰  Potential profit: <b>+${profit_lo:.0f}–${profit_hi:.0f}</b>  ({roi}% ROI)")
+            if plats:
+                plat_names = " / ".join(p["name"] for p in plats[:3])
+                lines.append(f"📱  Sell on: <b>{e(plat_names)}</b>")
+
+        urgency_d = flip.get("urgency", {})
+        if urgency_d and urgency_d.get("level") in ("critical", "high"):
+            u_emoji = _URGENCY_EMOJI.get(urgency_d["level"], "")
+            lines.append(f'{u_emoji}  <b>{urgency_d.get("label", "")}</b>')
+
+    lines.append("")
     lines.append(f"📡  {e(drop.get('source', ''))}")
 
     caption = "\n".join(lines)
@@ -632,16 +785,29 @@ def send_daily_digest(deals: list[dict]):
         return
 
     e = _h
+
+    flip_deals = [d for d in deals if d.get("est_profit_low", 0) > 0]
+    total_potential = sum(d.get("est_profit_low", 0) for d in flip_deals)
+
     lines = [
-        "📊  <b>DAILY DIGEST — Today's Best Finds</b>",
+        "💵  <b>DAILY MONEY REPORT</b>",
         "",
     ]
 
-    for i, deal in enumerate(deals, 1):
-        title = deal.get("title", "")[:60]
+    if flip_deals:
+        lines.append(f"📊  <b>{len(flip_deals)}</b> flip opportunities found today")
+        lines.append(f"💰  Total potential profit: <b>${total_potential:.0f}+</b>")
+        lines.append("")
+        lines.append("━━━ <b>TOP MONEY MOVES</b> ━━━")
+        lines.append("")
+
+    for i, deal in enumerate(deals[:10], 1):
+        title = deal.get("title", "")[:55]
         price = deal.get("price", "")
-        source = deal.get("source", "")
         url = deal.get("url", "")
+        profit_lo = deal.get("est_profit_low", 0)
+        profit_hi = deal.get("est_profit_high", 0)
+        roi = deal.get("roi_pct", 0)
 
         if url:
             lines.append(f'{i}. <a href="{e(url)}">{e(title)}</a>')
@@ -650,14 +816,14 @@ def send_daily_digest(deals: list[dict]):
 
         details = []
         if price:
-            details.append(f"💰 {e(price)}")
-        if source:
-            details.append(f"📡 {e(source)}")
+            details.append(f"Buy: {e(price)}")
+        if profit_lo > 0:
+            details.append(f"+${profit_lo:.0f}–${profit_hi:.0f} ({roi}% ROI)")
         if details:
-            lines.append(f"   {'  •  '.join(details)}")
+            lines.append(f"   {'  →  '.join(details)}")
         lines.append("")
 
-    lines.append(f"<i>{len(deals)} deals tracked today</i>")
+    lines.append(f"<i>{len(deals)} opportunities tracked today</i>")
 
     caption = "\n".join(lines)
     if len(caption) > 4090:

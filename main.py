@@ -266,6 +266,7 @@ def run_cycle():
         deal_id = database.deal_hash(deal["source"], deal["title"], deal["url"])
         alerts.send_alert(deal, ai_result, flip_est, price_intel)
         database.mark_alerted(deal_id)
+        _buffer_for_digest(deal, flip_est, price_intel)
         alert_count += 1
 
     if len(candidates) > MAX_ALERTS_PER_CYCLE:
@@ -284,24 +285,47 @@ def run_cycle():
     return alert_count
 
 
+_digest_buffer: list[dict] = []
+
+
+def _buffer_for_digest(deal: dict, flip: dict | None, price_intel: dict | None):
+    """Accumulate the best deals throughout cycles for the daily digest."""
+    entry = {
+        "title": deal.get("title", ""),
+        "url": deal.get("url", ""),
+        "price": deal.get("price", ""),
+        "source": deal.get("source", ""),
+    }
+    if flip:
+        entry["est_profit_low"] = flip.get("est_profit_low", 0)
+        entry["est_profit_high"] = flip.get("est_profit_high", 0)
+        entry["roi_pct"] = flip.get("roi_pct", 0)
+    _digest_buffer.append(entry)
+
+
 def run_daily_digest(cycle_count: int):
     """Send a daily summary of the best deals found in the last 24 hours."""
+    global _digest_buffer
     if cycle_count % 8 != 0 or cycle_count == 0:
         return
 
-    recent = database.get_recent_deals(limit=100)
-    alerted = [d for d in recent if d.get("is_alerted")]
-
-    if not alerted:
+    if not _digest_buffer:
         return
 
-    alerts.send_daily_digest(alerted[:10])
-    log.info("Daily digest sent with %d deals", min(len(alerted), 10))
+    sorted_buf = sorted(
+        _digest_buffer,
+        key=lambda d: d.get("est_profit_low", 0),
+        reverse=True,
+    )
+
+    alerts.send_daily_digest(sorted_buf[:10])
+    log.info("Daily digest sent with %d deals", min(len(sorted_buf), 10))
+    _digest_buffer = []
 
 
 def main():
     log.info("=" * 60)
-    log.info("  HypeBot v4 — deals, drops & flips 24/7")
+    log.info("  HypeBot v5 — your 24/7 streetwear money machine")
     log.info("  Ollama:   %s  |  Model: %s", config.OLLAMA_HOST, config.MODEL)
     log.info("  Interval: %ds  |  Sources: %d RSS, %d web, %d Reddit",
              config.SCRAPE_INTERVAL,
@@ -310,10 +334,16 @@ def main():
              len(config.REDDIT_SUBREDDITS))
     log.info("  Max alerts/cycle: %d  |  Min discount: %d%%",
              MAX_ALERTS_PER_CYCLE, MIN_DEAL_DISCOUNT)
-    log.info("  Features: resale engine, price tracking, restock alerts")
+    log.info("  Features: action plans, platform recs, ROI, urgency")
     log.info("=" * 60)
 
     database.init_db()
+
+    log.info("Sending money playbook to Telegram...")
+    try:
+        alerts.send_playbook()
+    except Exception:
+        log.exception("Playbook send failed — continuing")
 
     consecutive_errors = 0
     cycle_count = 0
