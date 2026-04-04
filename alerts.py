@@ -43,8 +43,9 @@ SOURCE_EMOJI = {
 }
 
 
-def send_alert(deal: dict, analysis: dict | None = None, flip: dict | None = None):
-    msg = _format_message(deal, analysis, flip)
+def send_alert(deal: dict, analysis: dict | None = None,
+               flip: dict | None = None, price_intel: dict | None = None):
+    msg = _format_message(deal, analysis, flip, price_intel)
     log.info("ALERT: %s", msg["title"])
     if config.TELEGRAM_BOT_TOKEN and config.TELEGRAM_CHAT_ID:
         _send_telegram(msg)
@@ -55,7 +56,8 @@ def send_alert(deal: dict, analysis: dict | None = None, flip: dict | None = Non
     _log_to_console(msg)
 
 
-def _format_message(deal: dict, analysis: dict | None, flip: dict | None = None) -> dict:
+def _format_message(deal: dict, analysis: dict | None,
+                    flip: dict | None = None, price_intel: dict | None = None) -> dict:
     verdict_key = ""
     hype_score  = 0
     ai_summary  = ""
@@ -87,6 +89,15 @@ def _format_message(deal: dict, analysis: dict | None, flip: dict | None = None)
         est_resale_high = flip.get("est_resale_high", 0)
         flip_signals    = flip.get("signals", [])
 
+    is_lowest  = False
+    is_restock = False
+    price_drop = 0.0
+
+    if price_intel:
+        is_lowest  = bool(price_intel.get("is_lowest"))
+        is_restock = bool(price_intel.get("is_restock"))
+        price_drop = price_intel.get("price_drop", 0)
+
     return {
         "title":          deal.get("title", "Unknown Deal"),
         "url":            deal.get("url", ""),
@@ -109,6 +120,9 @@ def _format_message(deal: dict, analysis: dict | None, flip: dict | None = None)
         "est_resale_low": est_resale_low,
         "est_resale_high": est_resale_high,
         "flip_signals":   flip_signals,
+        "is_lowest":      is_lowest,
+        "is_restock":     is_restock,
+        "price_drop":     price_drop,
     }
 
 
@@ -150,8 +164,11 @@ def _build_telegram_html(msg: dict) -> str:
 
     lines = []
 
-    # ── Flip alert banner ──
-    if flip_v in _FLIP_BADGE:
+    # ── Priority badges (most important signals first) ──
+    if msg.get("is_restock"):
+        lines.append("🔄  <b>RESTOCK ALERT — was sold out, back in stock!</b>")
+        lines.append("")
+    elif flip_v in _FLIP_BADGE:
         f_emoji, f_label = _FLIP_BADGE[flip_v]
         profit_low = msg.get("est_profit_low", 0)
         profit_high = msg.get("est_profit_high", 0)
@@ -161,8 +178,10 @@ def _build_telegram_html(msg: dict) -> str:
             lines.append(f"{f_emoji}  <b>{f_label}</b>")
         lines.append("")
 
-    # ── Deal badge ──
-    if disc >= 15 and flip_v not in _FLIP_BADGE:
+    if msg.get("is_lowest") and msg.get("price_drop", 0) > 0:
+        lines.append(f"📉  <b>LOWEST PRICE — ${msg['price_drop']:.0f} below previous low</b>")
+        lines.append("")
+    elif disc >= 15 and flip_v not in _FLIP_BADGE and not msg.get("is_restock"):
         lines.append(f"🏷  <b>{disc}% OFF</b>")
         lines.append("")
 
@@ -408,7 +427,9 @@ def _log_to_console(msg: dict):
     flip_s   = msg.get("flip_score", 0)
     sep = "─" * 62
     print(f"\n{sep}")
-    if flip_v in _FLIP_BADGE:
+    if msg.get("is_restock"):
+        print("  🔄  RESTOCK ALERT — was sold out, back in stock!")
+    elif flip_v in _FLIP_BADGE:
         f_emoji, f_label = _FLIP_BADGE[flip_v]
         profit_low = msg.get("est_profit_low", 0)
         profit_high = msg.get("est_profit_high", 0)
@@ -418,6 +439,8 @@ def _log_to_console(msg: dict):
             print(f"  {f_emoji}  {f_label}")
     elif disc >= 15:
         print(f"  🏷  {disc}% OFF")
+    if msg.get("is_lowest") and msg.get("price_drop", 0) > 0:
+        print(f"  📉  LOWEST PRICE — ${msg['price_drop']:.0f} below previous low")
     print(f"  {msg['title']}")
     if msg["price"]:
         orig = msg.get("original_price", "")
@@ -451,16 +474,16 @@ _TIER_LABEL = {
 }
 
 
-def send_drop_alert(drop: dict, tier: str):
+def send_drop_alert(drop: dict, tier: str, flip: dict | None = None):
     """Send an upcoming release alert for 'today', '1day', or '7day' tiers."""
     log.info("DROP ALERT [%s]: %s", tier, drop.get("title", ""))
-    _send_drop_telegram(drop, tier)
+    _send_drop_telegram(drop, tier, flip)
     if config.DISCORD_WEBHOOK_URL:
-        _send_drop_discord(drop, tier)
-    _log_drop_console(drop, tier)
+        _send_drop_discord(drop, tier, flip)
+    _log_drop_console(drop, tier, flip)
 
 
-def _send_drop_telegram(drop: dict, tier: str):
+def _send_drop_telegram(drop: dict, tier: str, flip: dict | None = None):
     e = _h
     t_emoji, t_label = _TIER_LABEL.get(tier, ("📅", "UPCOMING DROP"))
     release_label = drop.get("release_label") or drop.get("release_dt", "")[:10]
@@ -482,6 +505,16 @@ def _send_drop_telegram(drop: dict, tier: str):
 
     if drop.get("price"):
         lines.append(f"💰  <b>{e(drop['price'])}</b>")
+
+    # Flip potential for the drop
+    if flip and flip.get("flip_score", 0) >= 30:
+        fv = flip.get("flip_verdict", "")
+        profit_lo = flip.get("est_profit_low", 0)
+        profit_hi = flip.get("est_profit_high", 0)
+        if profit_lo > 0:
+            lines.append(f"💰  Flip potential: <b>+${profit_lo:.0f}–${profit_hi:.0f}</b> ({fv})")
+        else:
+            lines.append(f"💰  Flip potential: <b>{fv}</b>")
 
     lines.append(f"📡  {e(drop.get('source', ''))}")
 
@@ -529,7 +562,7 @@ def _send_drop_telegram(drop: dict, tier: str):
         log.exception("Drop Telegram alert failed")
 
 
-def _send_drop_discord(drop: dict, tier: str):
+def _send_drop_discord(drop: dict, tier: str, flip: dict | None = None):
     t_emoji, t_label = _TIER_LABEL.get(tier, ("📅", "UPCOMING DROP"))
     release_label = drop.get("release_label") or drop.get("release_dt", "")[:10]
     color = {"today": 0xFF1744, "1day": 0xFF9800, "7day": 0x2196F3}.get(tier, 0x9C27B0)
@@ -546,6 +579,15 @@ def _send_drop_discord(drop: dict, tier: str):
         ],
         "footer": {"text": "HypeBot • Release Calendar"},
     }
+    if flip and flip.get("flip_score", 0) >= 30:
+        profit_lo = flip.get("est_profit_low", 0)
+        profit_hi = flip.get("est_profit_high", 0)
+        flip_text = flip.get("flip_verdict", "")
+        if profit_lo > 0:
+            flip_text += f"\nEst. profit: +${profit_lo:.0f}–${profit_hi:.0f}"
+        embed["fields"].append({
+            "name": "💰 Flip Potential", "value": flip_text, "inline": True,
+        })
     if drop.get("image"):
         embed["image"] = {"url": drop["image"]}
 
@@ -559,7 +601,7 @@ def _send_drop_discord(drop: dict, tier: str):
         log.exception("Drop Discord alert failed")
 
 
-def _log_drop_console(drop: dict, tier: str):
+def _log_drop_console(drop: dict, tier: str, flip: dict | None = None):
     t_emoji, t_label = _TIER_LABEL.get(tier, ("📅", "UPCOMING DROP"))
     release_label = drop.get("release_label") or drop.get("release_dt", "")[:10]
     sep = "═" * 62
@@ -571,5 +613,73 @@ def _log_drop_console(drop: dict, tier: str):
     print(f"  🗓  {release_label}")
     if drop.get("price"):
         print(f"  💰 {drop['price']}")
+    if flip and flip.get("flip_score", 0) >= 30:
+        profit_lo = flip.get("est_profit_low", 0)
+        profit_hi = flip.get("est_profit_high", 0)
+        if profit_lo > 0:
+            print(f"  💰 Flip: +${profit_lo:.0f}–${profit_hi:.0f} ({flip.get('flip_verdict', '')})")
     print(f"  🔗 {drop.get('url', '')}")
     print(sep)
+
+
+# ===========================================================================
+# DAILY DIGEST — consolidated summary of the day's best opportunities
+# ===========================================================================
+
+def send_daily_digest(deals: list[dict]):
+    """Send a consolidated daily summary via Telegram."""
+    if not deals or not (config.TELEGRAM_BOT_TOKEN and config.TELEGRAM_CHAT_ID):
+        return
+
+    e = _h
+    lines = [
+        "📊  <b>DAILY DIGEST — Today's Best Finds</b>",
+        "",
+    ]
+
+    for i, deal in enumerate(deals, 1):
+        title = deal.get("title", "")[:60]
+        price = deal.get("price", "")
+        source = deal.get("source", "")
+        url = deal.get("url", "")
+
+        if url:
+            lines.append(f'{i}. <a href="{e(url)}">{e(title)}</a>')
+        else:
+            lines.append(f"{i}. {e(title)}")
+
+        details = []
+        if price:
+            details.append(f"💰 {e(price)}")
+        if source:
+            details.append(f"📡 {e(source)}")
+        if details:
+            lines.append(f"   {'  •  '.join(details)}")
+        lines.append("")
+
+    lines.append(f"<i>{len(deals)} deals tracked today</i>")
+
+    caption = "\n".join(lines)
+    if len(caption) > 4090:
+        caption = caption[:4087] + "..."
+
+    _tg_throttle()
+
+    base = f"https://api.telegram.org/bot{config.TELEGRAM_BOT_TOKEN}"
+    try:
+        resp = requests.post(
+            f"{base}/sendMessage",
+            json={
+                "chat_id":                  config.TELEGRAM_CHAT_ID,
+                "text":                     caption,
+                "parse_mode":               "HTML",
+                "disable_web_page_preview": True,
+            },
+            timeout=10,
+        )
+        if resp.ok:
+            log.info("Daily digest sent")
+        else:
+            log.error("Daily digest error %s: %s", resp.status_code, resp.text[:200])
+    except Exception:
+        log.exception("Daily digest failed")

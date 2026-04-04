@@ -79,6 +79,41 @@ def init_db():
             "CREATE INDEX IF NOT EXISTS idx_drops_release ON drops(release_dt)"
         )
 
+        # ── Price history table ───────────────────────────────────
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS price_history (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                title_norm  TEXT NOT NULL,
+                title       TEXT NOT NULL,
+                source      TEXT NOT NULL,
+                price       REAL NOT NULL,
+                url         TEXT DEFAULT '',
+                image       TEXT DEFAULT '',
+                seen_at     TEXT NOT NULL
+            )
+        """)
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_ph_title ON price_history(title_norm)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_ph_seen ON price_history(seen_at)"
+        )
+
+        # ── Item tracker for restock detection ────────────────────
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS item_tracker (
+                title_norm  TEXT PRIMARY KEY,
+                title       TEXT NOT NULL,
+                source      TEXT NOT NULL,
+                last_seen   TEXT NOT NULL,
+                last_price  REAL DEFAULT 0,
+                times_seen  INTEGER DEFAULT 1,
+                was_gone    INTEGER DEFAULT 0,
+                url         TEXT DEFAULT '',
+                image       TEXT DEFAULT ''
+            )
+        """)
+
 
 def deal_hash(source: str, title: str, url: str = "") -> str:
     raw = f"{source}|{title}|{url}".lower().strip()
@@ -232,4 +267,135 @@ def prune_old_drops(days: int = 7):
     with _connect() as conn:
         return conn.execute(
             "DELETE FROM drops WHERE release_dt < ?", (cutoff,)
+        ).rowcount
+
+
+# ---------------------------------------------------------------------------
+# Price history
+# ---------------------------------------------------------------------------
+
+def _normalize_title(title: str) -> str:
+    import re
+    return re.sub(r"[^a-z0-9 ]", "", title.lower()).strip()
+
+
+def record_price(title: str, source: str, price: float,
+                 url: str = "", image: str = "") -> dict:
+    """Record a price snapshot and return price intelligence.
+
+    Returns:
+        {
+            "is_lowest": bool,
+            "previous_low": float,
+            "price_drop": float,     # how much it dropped from prev low
+            "is_restock": bool,       # was gone, now it's back
+            "times_seen": int,
+        }
+    """
+    now = datetime.now(timezone.utc).isoformat()
+    norm = _normalize_title(title)
+    if not norm or len(norm) < 4:
+        return {"is_lowest": False, "previous_low": 0, "price_drop": 0,
+                "is_restock": False, "times_seen": 0}
+
+    conn = _connect()
+
+    # Record price snapshot
+    conn.execute(
+        "INSERT INTO price_history (title_norm, title, source, price, url, image, seen_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?)",
+        (norm, title, source, price, url, image, now),
+    )
+
+    # Find previous lowest price for this item
+    row = conn.execute(
+        "SELECT MIN(price) as min_price, COUNT(*) as cnt FROM price_history "
+        "WHERE title_norm = ? AND id != last_insert_rowid()",
+        (norm,),
+    ).fetchone()
+    prev_low = row["min_price"] if row and row["min_price"] is not None else 0
+    prev_count = row["cnt"] if row else 0
+
+    is_lowest = price < prev_low if prev_low > 0 else (prev_count == 0)
+    price_drop = prev_low - price if prev_low > price > 0 else 0
+
+    # Update item tracker for restock detection
+    tracker = conn.execute(
+        "SELECT * FROM item_tracker WHERE title_norm = ?", (norm,),
+    ).fetchone()
+
+    is_restock = False
+    times_seen = 1
+
+    if tracker:
+        was_gone = tracker["was_gone"]
+        times_seen = tracker["times_seen"] + 1
+        is_restock = bool(was_gone)
+
+        conn.execute(
+            "UPDATE item_tracker SET last_seen = ?, last_price = ?, "
+            "times_seen = ?, was_gone = 0, url = ?, image = ? "
+            "WHERE title_norm = ?",
+            (now, price, times_seen, url, image, norm),
+        )
+    else:
+        conn.execute(
+            "INSERT INTO item_tracker (title_norm, title, source, last_seen, "
+            "last_price, times_seen, url, image) VALUES (?, ?, ?, ?, ?, 1, ?, ?)",
+            (norm, title, source, now, price, url, image),
+        )
+
+    conn.commit()
+
+    return {
+        "is_lowest": is_lowest,
+        "previous_low": prev_low,
+        "price_drop": price_drop,
+        "is_restock": is_restock,
+        "times_seen": times_seen,
+    }
+
+
+def mark_gone_items(current_titles: set[str]):
+    """Mark items as 'gone' if they weren't seen in the current cycle.
+    Only marks items from web scraper sources (not RSS/Reddit)."""
+    now = datetime.now(timezone.utc)
+    cutoff = (now - timedelta(hours=6)).isoformat()
+    conn = _connect()
+
+    rows = conn.execute(
+        "SELECT title_norm FROM item_tracker WHERE last_seen < ? AND was_gone = 0",
+        (cutoff,),
+    ).fetchall()
+
+    norms = {_normalize_title(t) for t in current_titles}
+    marked = 0
+    for row in rows:
+        if row["title_norm"] not in norms:
+            conn.execute(
+                "UPDATE item_tracker SET was_gone = 1 WHERE title_norm = ?",
+                (row["title_norm"],),
+            )
+            marked += 1
+
+    if marked:
+        conn.commit()
+    return marked
+
+
+def prune_price_history(days: int = 30):
+    """Remove old price snapshots."""
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+    with _connect() as conn:
+        return conn.execute(
+            "DELETE FROM price_history WHERE seen_at < ?", (cutoff,)
+        ).rowcount
+
+
+def prune_item_tracker(days: int = 30):
+    """Remove stale items from tracker."""
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+    with _connect() as conn:
+        return conn.execute(
+            "DELETE FROM item_tracker WHERE last_seen < ?", (cutoff,)
         ).rowcount

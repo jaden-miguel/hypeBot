@@ -310,6 +310,43 @@ def _fetch_all_reddit() -> list[Deal]:
     return deals
 
 
+_NORM_RE = re.compile(r"[^a-z0-9 ]")
+
+
+def _normalize_title(title: str) -> str:
+    """Normalize a product title for cross-source dedup.
+    'Jordan Spizike Low' and 'JORDAN SPIZIKE LOW' → 'jordan spizike low'"""
+    return _NORM_RE.sub("", title.lower()).strip()
+
+
+def _cross_source_dedup(deals: list[Deal]) -> list[Deal]:
+    """Remove near-duplicate items across sources.
+    Keeps the deal with the lowest price (best for flipping)."""
+    seen: dict[str, Deal] = {}  # normalized_title → best Deal
+
+    for deal in deals:
+        key = _normalize_title(deal.title)
+        if not key or len(key) < 4:
+            continue
+
+        existing = seen.get(key)
+        if existing is None:
+            seen[key] = deal
+        else:
+            new_disc = deal.discount_pct or 0
+            old_disc = existing.discount_pct or 0
+            if new_disc > old_disc:
+                seen[key] = deal
+            elif new_disc == old_disc and deal.upvotes > existing.upvotes:
+                seen[key] = deal
+
+    deduped = list(seen.values())
+    removed = len(deals) - len(deduped)
+    if removed:
+        log.info("Cross-source dedup removed %d duplicates", removed)
+    return deduped
+
+
 def fetch_all_deals() -> list[dict]:
     all_deals: list[Deal] = []
 
@@ -320,7 +357,6 @@ def fetch_all_deals() -> list[dict]:
             futures.append(pool.submit(_fetch_single_rss, name, url))
         for target in config.SCRAPE_TARGETS:
             futures.append(pool.submit(_fetch_single_web, target))
-        # Reddit runs as one sequential batch in its own thread
         futures.append(pool.submit(_fetch_all_reddit))
 
         for f in as_completed(futures):
@@ -329,5 +365,6 @@ def fetch_all_deals() -> list[dict]:
             except Exception:
                 log.exception("Scraper thread failed")
 
-    log.info("Total raw deals found: %d", len(all_deals))
+    all_deals = _cross_source_dedup(all_deals)
+    log.info("Total deals after dedup: %d", len(all_deals))
     return [asdict(d) for d in all_deals]
