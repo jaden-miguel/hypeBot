@@ -16,7 +16,7 @@ MODEL = os.getenv("OLLAMA_MODEL", "llama3.1")
 # ---------------------------------------------------------------------------
 # Scraper timing (seconds)
 # ---------------------------------------------------------------------------
-SCRAPE_INTERVAL = int(os.getenv("SCRAPE_INTERVAL", "300"))  # 5 min default
+SCRAPE_INTERVAL = int(os.getenv("SCRAPE_INTERVAL", "10800"))  # 3 hours default
 
 # ---------------------------------------------------------------------------
 # Target brands & keywords
@@ -185,5 +185,5 @@ REQUEST_HEADERS = {
     ),
     "Accept-Language": "en-US,en;q=0.9",
 }
-REQUEST_TIMEOUT = 15
+REQUEST_TIMEOUT = 12
 REQUEST_DELAY = 2  # seconds between requests to the same host

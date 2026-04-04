@@ -1,10 +1,12 @@
 """
 Alert module — Telegram (HTML), Discord, email, console.
+Rate-limited to avoid API throttling during 24/7 operation.
 """
 
 import html
 import logging
 import smtplib
+import time
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 
@@ -13,6 +15,9 @@ import requests
 import config
 
 log = logging.getLogger(__name__)
+
+_last_tg_send = 0.0
+_TG_MIN_INTERVAL = 1.5  # seconds between Telegram API calls
 
 VERDICT_LABEL = {
     "RECOMMENDED": "Recommended",
@@ -160,13 +165,23 @@ def _build_telegram_html(msg: dict) -> str:
     return "\n".join(lines)
 
 
+def _tg_throttle():
+    """Wait if needed to respect Telegram rate limits."""
+    global _last_tg_send
+    elapsed = time.monotonic() - _last_tg_send
+    if elapsed < _TG_MIN_INTERVAL:
+        time.sleep(_TG_MIN_INTERVAL - elapsed)
+    _last_tg_send = time.monotonic()
+
+
 def _send_telegram(msg: dict):
     caption = _build_telegram_html(msg)
     base    = f"https://api.telegram.org/bot{config.TELEGRAM_BOT_TOKEN}"
 
-    # Telegram captions max 1024 chars; messages max 4096
     if len(caption) > 1020:
         caption = caption[:1017] + "..."
+
+    _tg_throttle()
 
     try:
         resp = None
@@ -378,6 +393,8 @@ def _send_drop_telegram(drop: dict, tier: str):
         caption = caption[:1017] + "..."
 
     base = f"https://api.telegram.org/bot{config.TELEGRAM_BOT_TOKEN}"
+
+    _tg_throttle()
 
     try:
         resp = None

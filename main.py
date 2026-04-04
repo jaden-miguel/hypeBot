@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
-HypeBot — 24/7 streetwear deals monitor.
-Optimized for long-running operation: graceful shutdown, log rotation,
-batch dedup, auto-pruning, and exponential backoff on errors.
+HypeBot — 24/7 streetwear deals & drops monitor.
+Runs lean: quality-scored alerts, capped per cycle, graceful shutdown,
+log rotation, batch dedup, auto-pruning, exponential backoff.
 """
 
 import gc
@@ -20,6 +20,10 @@ import alerts
 import drops as drop_scraper
 
 _shutdown = False
+
+MAX_ALERTS_PER_CYCLE = 15
+MIN_DEAL_DISCOUNT = 20
+MIN_HYPE_TO_ALERT = 5
 
 
 def _handle_signal(signum, frame):
@@ -45,6 +49,34 @@ logging.basicConfig(level=logging.INFO, handlers=[console, file_handler])
 log = logging.getLogger("hypebot")
 
 
+def _quality_score(deal: dict, ai: dict | None) -> float:
+    """Compute a quality score to rank deals. Higher = better deal."""
+    score = 0.0
+    disc = deal.get("discount_pct", 0) or 0
+    score += disc * 2.0                         # 40% off → +80
+
+    if ai:
+        hype = ai.get("hype_score", 0)
+        if isinstance(hype, int):
+            score += hype * 5                   # hype 8 → +40
+        if ai.get("trending"):
+            score += 20
+        verdict = ai.get("verdict", "").lower()
+        if verdict == "recommended":
+            score += 30
+        elif verdict == "watch":
+            score += 10
+
+    upvotes = deal.get("upvotes", 0)
+    comments = deal.get("comments", 0)
+    if upvotes:
+        score += min(upvotes / 5, 30)           # 150 upvotes → +30 (capped)
+    if comments:
+        score += min(comments / 3, 15)           # 45 comments → +15 (capped)
+
+    return score
+
+
 def run_drop_check():
     """Scrape upcoming drops and fire time-based alerts."""
     t0 = time.monotonic()
@@ -55,7 +87,6 @@ def run_drop_check():
         if database.save_drop(drop):
             added += 1
 
-    # Fire alerts for drops hitting their notification tier
     pending = database.get_drops_needing_notification()
     for drop in pending:
         if _shutdown:
@@ -83,8 +114,9 @@ def run_cycle():
     if not ollama_ok:
         log.warning("Ollama unreachable — skipping AI analysis this cycle")
 
+    # Phase 1: dedup, classify, and score all deals
+    candidates: list[tuple[dict, dict | None, float]] = []
     new_count = 0
-    alert_count = 0
 
     for deal in raw_deals:
         if _shutdown:
@@ -94,24 +126,34 @@ def run_cycle():
         if deal_id in known_ids:
             continue
 
-        # Web-scraped products with a price are already purchasable —
-        # skip the slow Ollama call and auto-recommend them.
         is_web_deal = (
             deal.get("price")
             and not deal.get("summary")
             and not deal.get("upvotes")
         )
+        disc = deal.get("discount_pct", 0) or 0
 
         ai_result = None
         if is_web_deal:
-            disc = deal.get("discount_pct", 0)
+            if disc < MIN_DEAL_DISCOUNT:
+                # Full-price or small discount — save silently, no alert
+                database.save_deal(
+                    deal_id=deal_id, source=deal["source"],
+                    title=deal["title"], url=deal.get("url", ""),
+                    price=deal.get("price", ""),
+                    summary="", ai_analysis="", image=deal.get("image", ""),
+                )
+                known_ids.add(deal_id)
+                new_count += 1
+                continue
+
             ai_result = {
-                "verdict": "recommended" if disc >= 15 else "watch",
+                "verdict": "recommended",
                 "brand": "",
                 "hype_score": min(10, 5 + disc // 10),
                 "trending": disc >= 30,
                 "available_now": True,
-                "summary": f"{disc}% off — sale price" if disc else "In stock at retail",
+                "summary": f"{disc}% off — sale price",
             }
         elif ollama_ok:
             ai_result = analyzer.analyze_deal(
@@ -125,43 +167,55 @@ def run_cycle():
             )
 
         database.save_deal(
-            deal_id=deal_id,
-            source=deal["source"],
-            title=deal["title"],
-            url=deal.get("url", ""),
-            price=deal.get("price", ""),
-            summary=deal.get("summary", ""),
+            deal_id=deal_id, source=deal["source"],
+            title=deal["title"], url=deal.get("url", ""),
+            price=deal.get("price", ""), summary=deal.get("summary", ""),
             ai_analysis=str(ai_result) if ai_result else "",
             upvotes=deal.get("upvotes", 0),
             comments=deal.get("comments", 0),
-            flair=deal.get("flair", ""),
-            image=deal.get("image", ""),
+            flair=deal.get("flair", ""), image=deal.get("image", ""),
         )
         known_ids.add(deal_id)
+        new_count += 1
 
-        should_alert = True
+        # Quick-reject before scoring
         if ai_result:
             verdict = ai_result.get("verdict", "").lower()
-            hype = ai_result.get("hype_score", 5)
-            available_now = ai_result.get("available_now", True)
+            available = ai_result.get("available_now", True)
+            hype = ai_result.get("hype_score", 0)
             if not isinstance(hype, int):
                 try:
                     hype = int(hype)
                 except (TypeError, ValueError):
-                    hype = 5
-            if verdict == "skip":
-                should_alert = False
-            elif not available_now:
-                should_alert = False
-            elif verdict in ("watch", "maybe") and hype < 4:
-                should_alert = False
+                    hype = 0
 
-        if should_alert:
-            alerts.send_alert(deal, ai_result)
-            database.mark_alerted(deal_id)
-            alert_count += 1
+            if verdict == "skip" or not available:
+                continue
+            if verdict in ("watch", "maybe") and hype < MIN_HYPE_TO_ALERT:
+                continue
 
-        new_count += 1
+        score = _quality_score(deal, ai_result)
+        candidates.append((deal, ai_result, score))
+
+    # Phase 2: rank by quality and alert only the top deals
+    candidates.sort(key=lambda c: c[2], reverse=True)
+    alert_count = 0
+
+    for deal, ai_result, score in candidates[:MAX_ALERTS_PER_CYCLE]:
+        if _shutdown:
+            break
+        deal_id = database.deal_hash(deal["source"], deal["title"], deal["url"])
+        alerts.send_alert(deal, ai_result)
+        database.mark_alerted(deal_id)
+        alert_count += 1
+
+    if len(candidates) > MAX_ALERTS_PER_CYCLE:
+        log.info(
+            "Capped alerts: %d qualified, sent top %d (scores %.0f–%.0f)",
+            len(candidates), alert_count,
+            candidates[0][2] if candidates else 0,
+            candidates[min(alert_count, len(candidates)) - 1][2] if candidates else 0,
+        )
 
     elapsed = time.monotonic() - t0
     log.info(
@@ -173,28 +227,32 @@ def run_cycle():
 
 def main():
     log.info("=" * 60)
-    log.info("  HypeBot v2 — optimized for 24/7")
+    log.info("  HypeBot v3 — lean 24/7 operation")
     log.info("  Ollama:   %s  |  Model: %s", config.OLLAMA_HOST, config.MODEL)
     log.info("  Interval: %ds  |  Sources: %d RSS, %d web, %d Reddit",
              config.SCRAPE_INTERVAL,
              len(config.RSS_FEEDS),
              len(config.SCRAPE_TARGETS),
              len(config.REDDIT_SUBREDDITS))
+    log.info("  Max alerts/cycle: %d  |  Min deal discount: %d%%",
+             MAX_ALERTS_PER_CYCLE, MIN_DEAL_DISCOUNT)
     log.info("=" * 60)
 
     database.init_db()
 
     consecutive_errors = 0
     cycle_count = 0
+    cycle_start = time.monotonic()
 
     while not _shutdown:
         try:
+            cycle_start = time.monotonic()
             run_drop_check()
             run_cycle()
             consecutive_errors = 0
             cycle_count += 1
 
-            if cycle_count % 8 == 0:  # ~every 24h at 3h intervals
+            if cycle_count % 8 == 0:
                 pruned_deals = database.prune_old_deals(days=30)
                 pruned_drops = database.prune_old_drops(days=7)
                 if pruned_deals or pruned_drops:

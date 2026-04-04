@@ -13,47 +13,10 @@ import config
 log = logging.getLogger(__name__)
 
 SYSTEM_PROMPT = """\
-You are an elite streetwear intelligence analyst. You deeply understand hype culture, \
-resale markets, and authentic retail drops.
-
-IMPORTANT — You ONLY cover physical clothing, footwear, and accessories. \
-Immediately give a "skip" verdict to anything that is NOT wearable product, including:
-- Subscriptions, memberships, gift cards, loyalty programs
-- Apps, software, digital downloads, NFTs, crypto
-- Concert/event tickets, travel, hotel deals
-- Food, beverages, meal kits
-- Electronics, gadgets, phone cases, headphones
-- Furniture, home decor, candles, fragrances
-- Books, albums, video games, podcasts
-- Insurance, warranties, credit cards, financial products
-If the item is ambiguous or you cannot confirm it is clothing/footwear/accessories, use "skip".
-
-CRITICAL — Only give "recommended" or "watch" if the item is CURRENTLY AVAILABLE TO PURCHASE. \
-If the item has not yet released, is only announced, or is sold out, give "skip". \
-Signs an item IS available: price is listed, "available now", "buy now", "in stock", \
-"on sale", "just dropped", "shop now", "now available", product page URL. \
-Signs an item is NOT available: "coming soon", "release date", "rumored", "leaked", \
-"expected", "announced", no price listed.
-
-Brands you track: Supreme, Kith, Palace, Stussy, BAPE, Nike, Jordan, Adidas, Yeezy, \
-New Balance, Raf Simons, Rick Owens, Fear of God, Essentials, Arc'teryx, The North Face, \
-Stone Island, Off-White, Rhude, Gallery Dept, Corteiz, Represent, Amiri, Chrome Hearts.
-
-You understand:
-- Reddit community signals: high upvotes + comments = community is hyped
-- Resale value indicators: limited drops, collabs, and OOS items hold/gain value
-- Seasonal trends: what's hot right now vs. played out
-- Only authentic, legitimate retail products — ignore anything replica or fake
-
-Respond ONLY with this JSON:
-{
-  "verdict": "recommended" | "skip" | "watch",
-  "brand": "<brand name>",
-  "hype_score": <1-10>,
-  "trending": true | false,
-  "available_now": true | false,
-  "summary": "<1-2 sentence professional analysis — mention availability, market value, or demand signals>"
-}"""
+Streetwear analyst. SKIP anything not clothing/footwear/accessories. \
+SKIP if not currently available to purchase. Only "recommended" or "watch" for buyable items.
+Respond ONLY as JSON:
+{"verdict":"recommended"|"skip"|"watch","brand":"NAME","hype_score":1-10,"trending":BOOL,"available_now":BOOL,"summary":"1 sentence"}"""
 
 _session = None
 
@@ -89,7 +52,7 @@ def analyze_deal(
     if upvotes or comments:
         prompt_parts.append(f"Community: {upvotes} upvotes, {comments} comments")
     if summary:
-        prompt_parts.append(f"Details: {summary[:400]}")
+        prompt_parts.append(f"Details: {summary[:200]}")
 
     try:
         resp = _get_session().post(
@@ -101,9 +64,9 @@ def analyze_deal(
                     {"role": "user", "content": "\n".join(prompt_parts)},
                 ],
                 "stream": False,
-                "options": {"num_predict": 200},
+                "options": {"num_predict": 120, "temperature": 0.3},
             },
-            timeout=45,
+            timeout=30,
         )
         resp.raise_for_status()
         return _parse_verdict(resp.json()["message"]["content"])
@@ -120,9 +83,15 @@ def _parse_verdict(raw: str) -> dict:
         raw = raw.rsplit("```", 1)[0]
     raw = raw.strip()
 
+    # Fix common LLM quirks: TRUE/FALSE → true/false, trailing commas
+    import re
+    raw = raw.replace("TRUE", "true").replace("FALSE", "false")
+    raw = raw.replace("True", "true").replace("False", "false")
+    raw = re.sub(r",\s*}", "}", raw)
+    raw = re.sub(r",\s*]", "]", raw)
+
     try:
         data = json.loads(raw)
-        # Reject responses where the model echoed back template placeholders
         if isinstance(data.get("hype_score"), str) or "<" in str(data.get("brand", "")):
             log.warning("LLM returned template placeholder — defaulting to skip")
             return {"verdict": "skip", "brand": "unknown", "hype_score": 0,
